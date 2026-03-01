@@ -1,25 +1,49 @@
 # ============================================================================
 # Multi-stage Dockerfile for Inference Service
 # ============================================================================
-# Build: docker build -t inference-service .
-# Run:   docker run --env-file .env inference-service
+# Backends: ONNX (default), Candle (Rust-native LLMs), llama.cpp (GGUF models)
+#
+# Build with default (ONNX only):
+#   docker build -t inference-service .
+#
+# Build with Candle backend:
+#   docker build --build-arg FEATURES=candle -t inference-service .
+#
+# Build with llama.cpp backend:
+#   docker build --build-arg FEATURES=llama -t inference-service .
+#
+# Build with all backends:
+#   docker build --build-arg FEATURES="candle,llama" -t inference-service .
+#
+# Run:
+#   docker run --env-file .env inference-service
 
 # -----------------------------------------------------------------------------
 # Stage 1: Builder
 # -----------------------------------------------------------------------------
 FROM rust:latest AS builder
 
+# Build argument for optional features (candle, llama, or both)
+ARG FEATURES=""
+
 WORKDIR /app
 
-# Install protobuf compiler for gRPC
-RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    protobuf-compiler \
+    cmake \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy workspace files
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 
-# Build release binary
-RUN cargo build --release --package inference-service
+# Build release binary with optional features
+RUN if [ -z "$FEATURES" ]; then \
+        cargo build --release --package inference-service; \
+    else \
+        cargo build --release --package inference-service --features "$FEATURES"; \
+    fi
 
 # -----------------------------------------------------------------------------
 # Stage 2: Runtime

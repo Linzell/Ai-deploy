@@ -39,7 +39,7 @@ endif
 # Default target
 help:
 	@echo "╔══════════════════════════════════════════════════════════════════╗"
-	@echo "║        Maiia AI Inference Service - ONNX + Candle Runtime        ║"
+	@echo "║     Maiia AI Inference Service - ONNX / Candle / llama.cpp       ║"
 	@echo "╚══════════════════════════════════════════════════════════════════╝"
 	@echo ""
 	@echo "  Development:"

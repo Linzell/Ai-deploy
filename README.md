@@ -1,12 +1,13 @@
 # Maiia AI Inference Service
 
-Generic ONNX inference service in Rust. Single binary that runs **any** HuggingFace model type without code changes - configure via TOML files.
+Generic inference service in Rust. Single binary that runs **any** HuggingFace model type without code changes - configure via TOML files.
 
 ## Features
 
 - **Universal**: Supports all HuggingFace task types (NLP, Audio, Vision, Multimodal)
+- **Multi-backend**: ONNX Runtime (default), Candle (Rust-native), llama.cpp (GGUF models)
 - **Zero code changes**: Add new models by creating a TOML config file
-- **Fast**: Rust + ONNX Runtime for high-performance inference
+- **Fast**: Rust + optimized backends for high-performance inference
 - **Production-ready**: gRPC API, health checks, batching support
 - **Flexible loading**: HuggingFace Hub, S3/MinIO, or local files
 
@@ -175,13 +176,25 @@ grpcurl -plaintext \
 ## Docker
 
 ```bash
-# Build
+# Build (ONNX only - default)
 docker build -t maiia-inference .
+
+# Build with Candle backend (Rust-native LLMs)
+docker build --build-arg FEATURES=candle -t maiia-inference .
+
+# Build with llama.cpp backend (GGUF models)
+docker build --build-arg FEATURES=llama -t maiia-inference .
+
+# Build with all backends
+docker build --build-arg FEATURES="candle,llama" -t maiia-inference .
 
 # Run with specific task
 TASK_CONFIG=nlp/feature-extraction.toml docker compose up
 
-# Run with GPU
+# Run with Candle backend enabled
+FEATURES=candle docker compose up --build
+
+# Run with GPU (NVIDIA)
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
 ```
 
@@ -202,12 +215,33 @@ AI-deploy/
 │   └── foundation/         # Production-ready foundation models
 ├── models/                 # Local model storage
 └── crates/
-    ├── inference-core/     # Config, error types
-    ├── inference-tasks/    # OnnxTask, EchoTask
-    ├── inference-grpc/     # gRPC server, proto
-    ├── inference-service/  # Main binary
-    ├── inference-loader-hf/  # HuggingFace loader
+    ├── inference-core/       # Shared config, error types, generation config
+    ├── inference-onnx/       # ONNX Runtime backend (embeddings, seq2seq, vision)
+    ├── inference-candle/     # Candle backend (Rust-native LLMs)
+    ├── inference-llama/      # llama.cpp backend (GGUF models)
+    ├── inference-tasks/      # Facade crate (re-exports backends, task registry)
+    ├── inference-grpc/       # gRPC server, proto definitions
+    ├── inference-service/    # Main binary
+    ├── inference-preprocess/ # Tokenizers, image/audio preprocessing
+    ├── inference-postprocess/# Output decoding, post-processing
+    ├── inference-loader-hf/  # HuggingFace Hub loader
     └── inference-loader-s3/  # S3/MinIO loader
+```
+
+## Backends
+
+| Backend | Feature Flag | Use Case | Models |
+|---------|--------------|----------|--------|
+| ONNX Runtime | (default) | Embeddings, classification, seq2seq, vision | All ONNX models |
+| Candle | `candle` | Rust-native LLMs, no Python deps | Qwen3, Llama 3.x, Mistral |
+| llama.cpp | `llama` | Quantized GGUF models | Any GGUF model |
+
+```bash
+# Build with all backends
+cargo build --release --features "candle,llama"
+
+# Build with specific backend
+cargo build --release --features "candle"
 ```
 
 ## Adding a New Model

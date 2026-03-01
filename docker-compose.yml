@@ -2,14 +2,21 @@
 # Docker Compose for Maiia AI Inference Service
 # ============================================================================
 #
+# Backends: ONNX (default), Candle (Rust-native LLMs), llama.cpp (GGUF models)
+#
 # Usage:
-#   docker compose up                    # Start with echo task (default)
+#   docker compose up                    # Start with echo task (default, ONNX only)
 #   docker compose up -d                 # Start in background
 #
 # Run specific task:
 #   TASK_CONFIG=nlp/feature-extraction.toml docker compose up
 #   TASK_CONFIG=audio/automatic-speech-recognition.toml docker compose up
 #   TASK_CONFIG=vision/image-classification.toml docker compose up
+#
+# Build with optional backends:
+#   FEATURES=candle docker compose up --build          # Enable Candle backend
+#   FEATURES=llama docker compose up --build           # Enable llama.cpp backend
+#   FEATURES="candle,llama" docker compose up --build  # Enable all backends
 #
 # ============================================================================
 
@@ -21,6 +28,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        - FEATURES=${FEATURES:-}
     ports:
       - "50051:50051"  # gRPC
       - "8080:8080"    # Health check
