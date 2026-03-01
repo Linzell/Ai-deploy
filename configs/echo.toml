@@ -1,0 +1,22 @@
+# Echo task configuration
+# Simple test task that echoes input back - no model required
+#
+# Test with:
+#   grpcurl -plaintext -d '{"task_name":"maiia.echo.v1","payload":"{\"message\":\"Hello world!\",\"number\":42}","request_id":"1"}' \
+#     127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+
+[task]
+type = "echo"
+name = "maiia.echo.v1"
+
+[model]
+# No model needed for echo task
+
+[inference]
+device = "cpu"
+
+[service]
+grpc_port = 50051
+health_port = 8080
+name = "maiia-echo-worker"
+enable_batching = false

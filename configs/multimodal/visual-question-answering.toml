@@ -1,0 +1,44 @@
+# Visual Question Answering (VQA)
+# HuggingFace task: visual-question-answering
+#
+# Test with S3 image + question (service handles preprocessing):
+#   grpcurl -plaintext -d '{"task_name":"maiia.vqa.v1","payload":"{\"image\":\"s3://my-bucket/photo.jpg\",\"text\":\"What is in this image?\"}","request_id":"1"}' 127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# Test with base64 image + question:
+#   grpcurl -plaintext -d '{"task_name":"maiia.vqa.v1","payload":"{\"image\":\"data:image/jpeg;base64,/9j/...\",\"text\":\"How many people are there?\"}","request_id":"1"}' 127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+# 
+# Answers questions about images using Florence-2.
+# Florence-2 supports VQA via the <VQA> task prompt.
+#
+# ONNX models on HuggingFace:
+#   - onnx-community/Florence-2-base-ft (Florence-2, used here)
+#   - onnx-community/Florence-2-large-ft (Florence-2 Large)
+#
+# Input format (from LangChain - service handles preprocessing):
+#   {"image": "s3://bucket/image.jpg", "text": "What is in this image?"}
+#   {"image": "data:image/png;base64,...", "question": "How many items?"}
+#
+# Output format:
+#   {"outputs": {"generated_text": "answer to the question"}}
+
+[task]
+type = "visual-question-answering"
+name = "maiia.vqa.v1"
+
+[model]
+source = "huggingface"
+path = "onnx-community/Florence-2-base-ft"
+# Florence-2 uses encoder-decoder architecture
+encoder_file = "onnx/encoder_model.onnx"
+decoder_file = "onnx/decoder_model_merged.onnx"
+
+[inference]
+device = "cpu"
+max_tokens = 256
+num_threads = 4
+
+[service]
+grpc_port = 50051
+health_port = 8080
+name = "maiia-vqa-worker"
+enable_batching = false  # Autoregressive generation - disable batching

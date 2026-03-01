@@ -1,0 +1,47 @@
+# Sentence Similarity / Semantic Search
+# HuggingFace task: sentence-similarity
+#
+# Test with text pair (service handles tokenization):
+#   grpcurl -plaintext -d '{"task_name":"maiia.sentence-similarity.v1","payload":"{\"text_a\":\"The cat sat on the mat.\",\"text_b\":\"A feline rested on the rug.\"}","request_id":"1"}' \
+#     127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# Test with single text (for embedding):
+#   grpcurl -plaintext -d '{"task_name":"maiia.sentence-similarity.v1","payload":"{\"text\":\"Hello world\"}","request_id":"1"}' \
+#     127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+# 
+# Computes similarity scores between sentences (uses embeddings internally).
+# Popular models: sentence-transformers/*, all-MiniLM-L6-v2
+#
+# ONNX models on HuggingFace:
+#   - Xenova/all-MiniLM-L6-v2
+#   - Xenova/paraphrase-multilingual-MiniLM-L12-v2
+#   - Xenova/multi-qa-MiniLM-L6-cos-v1
+#
+# Input format (from LangChain - service handles tokenization):
+#   {"text_a": "First sentence", "text_b": "Second sentence"}
+#   {"text": "Single sentence for embedding"}
+#
+# Output format:
+#   {"outputs": {"sentence_embedding": [[0.1, 0.2, ...]]}}
+#   (Pooled embedding for similarity computation)
+
+[task]
+type = "sentence-similarity"
+name = "maiia.sentence-similarity.v1"
+
+[model]
+source = "huggingface"
+path = "Xenova/all-MiniLM-L6-v2"
+onnx_file = "onnx/model.onnx"
+
+[inference]
+device = "cpu"
+num_threads = 4
+
+[service]
+grpc_port = 50051
+health_port = 8080
+name = "maiia-sentence-similarity-worker"
+enable_batching = true
+max_batch_size = 64
+batch_timeout_ms = 50

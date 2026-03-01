@@ -1,0 +1,57 @@
+# Nomic Embed Text v1 - Matryoshka Embedding Model
+# HuggingFace: nomic-ai/nomic-embed-text-v1 (ONNX: Xenova/nomic-embed-text-v1)
+#
+# Test with query text (prefix added automatically based on task):
+#   grpcurl -plaintext -d '{"task_name":"maiia.nomic-embed-text-v1.v1","payload":"{\"text\":\"search_query: What is machine learning?\"}","request_id":"1"}' 127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# Test with document text:
+#   grpcurl -plaintext -d '{"task_name":"maiia.nomic-embed-text-v1.v1","payload":"{\"text\":\"search_document: Machine learning is a subset of artificial intelligence...\"}","request_id":"1"}' 127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# High-quality embeddings with Matryoshka representation learning.
+# 768 dimensions (can be truncated to 256, 128, 64 for efficiency).
+#
+# Key features:
+#   - Matryoshka embeddings: truncate to any dimension without retraining
+#   - 8192 context length (longest among popular models)
+#   - Strong performance on MTEB benchmark
+#
+# Prefixes (include in text):
+#   - "search_query: " for queries
+#   - "search_document: " for documents
+#   - "clustering: " for clustering tasks
+#   - "classification: " for classification
+#
+# Use cases:
+#   - Semantic search with flexible dimension trade-offs
+#   - Long document embeddings (8K context)
+#   - Storage-efficient vector databases (use 256-dim)
+#
+# Input format (from LangChain):
+#   {"text": "search_query: Your query here"}
+#   {"text": "search_document: Your document text here"}
+#   (Rust handles tokenization)
+#
+# Output format:
+#   {"outputs": {"last_hidden_state": [[[0.1, 0.2, ...]]]}}  # 768-dim per token
+#   Note: Mean pool all tokens for sentence embedding, then optionally truncate
+
+[task]
+type = "feature-extraction"
+name = "maiia.nomic-embed-text-v1.v1"
+
+[model]
+source = "huggingface"
+path = "Xenova/nomic-embed-text-v1"
+onnx_file = "onnx/model.onnx"
+
+[inference]
+device = "cpu"
+num_threads = 4
+
+[service]
+grpc_port = 50051
+health_port = 8080
+name = "maiia-nomic-embed-text-v1-worker"
+enable_batching = true
+max_batch_size = 32
+batch_timeout_ms = 50

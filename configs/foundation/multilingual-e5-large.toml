@@ -1,0 +1,50 @@
+# Multilingual E5 Large - Foundation Embedding Model
+# HuggingFace: intfloat/multilingual-e5-large (ONNX: Xenova/multilingual-e5-large)
+#
+# Test with raw text (service handles tokenization and applies prefix):
+#   grpcurl -plaintext -d '{"task_name":"maiia.multilingual-e5-large.v1","payload":"{\"text\":\"Hello world\",\"prefix\":\"query: \"}","request_id":"1"}' 127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# Batch test:
+#   grpcurl -plaintext -d '{"task_name":"maiia.multilingual-e5-large.v1","payload":"{\"text\":[\"What is AI?\",\"How does ML work?\"],\"prefix\":\"query: \"}","request_id":"1"}' 127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# World-class multilingual embeddings supporting 100+ languages.
+# 768 dimensions, 512 max tokens.
+#
+# Key features:
+#   - Supports 100+ languages with strong cross-lingual transfer
+#   - Trained on 1B+ text pairs
+#   - Prefix required: "query: " for queries, "passage: " for documents
+#
+# Use cases:
+#   - Semantic search across multiple languages
+#   - Cross-lingual document retrieval
+#   - Multilingual RAG systems
+#
+# Input format (from LangChain - service handles tokenization):
+#   {"text": "What is machine learning?", "prefix": "query: "}
+#   {"text": ["doc 1", "doc 2"], "prefix": "passage: "}
+#
+# Output format:
+#   {"outputs": {"last_hidden_state": [[[0.1, 0.2, ...]]]}}  # 768-dim per token
+#   Note: Pool the [CLS] token (index 0) or mean pool for sentence embedding
+
+[task]
+type = "feature-extraction"
+name = "maiia.multilingual-e5-large.v1"
+
+[model]
+source = "huggingface"
+path = "Xenova/multilingual-e5-large"
+onnx_file = "onnx/model.onnx"
+
+[inference]
+device = "cpu"
+num_threads = 4
+
+[service]
+grpc_port = 50051
+health_port = 8080
+name = "maiia-multilingual-e5-large-worker"
+enable_batching = true
+max_batch_size = 32
+batch_timeout_ms = 50

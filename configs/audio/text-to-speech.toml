@@ -1,0 +1,52 @@
+# Text-to-Speech (TTS)
+# HuggingFace task: text-to-speech
+#
+# Test with raw text:
+#   grpcurl -plaintext -d '{"task_name":"maiia.tts.v1","payload":"{\"text\":\"Hello, this is a test of text to speech.\"}","request_id":"1"}' \
+#     127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# Test with voice description (Parler TTS specific):
+#   grpcurl -plaintext -d '{"task_name":"maiia.tts.v1","payload":"{\"text\":\"Hello world\",\"voice_description\":\"A warm female voice with moderate pace\"}","request_id":"1"}' \
+#     127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# Synthesizes speech from text using Parler TTS.
+#
+# Backend: Candle (uses candle-transformers Parler TTS implementation)
+#
+# Parler TTS features:
+#   - High-quality speech synthesis
+#   - Supports voice descriptions (e.g., "A deep male voice with slow pace")
+#   - Uses T5 encoder + decoder + DAC audio codec
+#   - Output: 24kHz audio
+#
+# Models:
+#   - parler-tts/parler-tts-mini-v1 (recommended, smaller, ~880MB)
+#   - parler-tts/parler-tts-large-v1 (higher quality, ~2.3GB)
+#
+# Input format:
+#   {"text": "Hello, this is a test."}
+#   {"text": "Hello", "voice_description": "A warm female voice with moderate pace"}
+#
+# Output format:
+#   {"waveform": [[0.1, 0.2, ...]], "sample_rate": 24000}
+#   (Raw audio samples at 24kHz)
+
+[task]
+type = "text-to-speech"
+name = "maiia.tts.v1"
+
+[model]
+source = "huggingface"
+path = "parler-tts/parler-tts-mini-v1" # Parler TTS Mini (recommended)
+
+[inference]
+backend = "candle" # Use Candle backend for TTS
+device = "gpu"
+num_threads = 4
+max_tokens = 2048 # Max generation steps
+
+[service]
+grpc_port = 50051
+health_port = 8080
+name = "maiia-tts-worker"
+enable_batching = false # TTS typically one request at a time

@@ -1,0 +1,46 @@
+# Audio Classification
+# HuggingFace task: audio-classification
+#
+# Test with S3 audio file (service handles preprocessing):
+#   grpcurl -plaintext -d '{"task_name":"maiia.audio-classification.v1","payload":"{\"audio\":\"s3://my-bucket/speech.wav\"}","request_id":"1"}' \
+#     127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# Test with base64 audio:
+#   grpcurl -plaintext -d '{"task_name":"maiia.audio-classification.v1","payload":"{\"audio\":\"data:audio/wav;base64,UklGR...\"}","request_id":"1"}' \
+#     127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+# 
+# Classifies audio into categories (speech commands, music genre, emotion, etc.)
+# Popular models: facebook/wav2vec2-*, MIT/ast-finetuned-audioset
+#
+# ONNX models on HuggingFace:
+#   - Xenova/wav2vec2-base-superb-ks (keyword spotting)
+#   - Xenova/ast-finetuned-audioset-10-10-0.4593 (AudioSet)
+#   - Xenova/wav2vec2-large-xlsr-53-gender-recognition
+#
+# Input format (from LangChain - service handles preprocessing):
+#   {"audio": "s3://bucket/audio.wav"}
+#   {"audio": "data:audio/wav;base64,..."}
+#
+# Output format:
+#   {"outputs": {"logits": [[class_scores]]}}
+
+[task]
+type = "audio-classification"
+name = "maiia.audio-classification.v1"
+
+[model]
+source = "huggingface"
+path = "Xenova/wav2vec2-base-superb-ks"
+onnx_file = "onnx/model.onnx"
+
+[inference]
+device = "cpu"
+num_threads = 4
+
+[service]
+grpc_port = 50051
+health_port = 8080
+name = "maiia-audio-classification-worker"
+enable_batching = true
+max_batch_size = 8
+batch_timeout_ms = 100

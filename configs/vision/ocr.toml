@@ -1,0 +1,52 @@
+# OCR - Optical Character Recognition
+# Task type: ocr
+#
+# Test with base64 image:
+#   grpcurl -plaintext -d '{"task_name":"maiia.ocr.v1","payload":"{\"image\":\"data:image/png;base64,iVBORw0KGgo...\"}","request_id":"1"}' \
+#     127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# Test with S3 image:
+#   grpcurl -plaintext -d '{"task_name":"maiia.ocr.v1","payload":"{\"image\":\"s3://bucket/document.png\"}","request_id":"1"}' \
+#     127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# Extracts text from images using PaddleOCR (ONNX version).
+#
+# ONNX models available:
+#   - monkt/paddleocr-onnx (detection + recognition models, recommended)
+#   - Contains: det_model.onnx (text detection), rec_model.onnx (text recognition)
+#
+# Alternative models:
+#   - microsoft/trocr-base-printed (TrOCR for printed text, encoder-decoder)
+#   - microsoft/trocr-base-handwritten (TrOCR for handwritten text)
+#
+# Input format (service handles image preprocessing):
+#   {"image": "s3://bucket/document.png"}
+#   {"image": "/local/path/scan.jpg"}
+#   {"image": "data:image/jpeg;base64,/9j/..."}
+#
+# Output format:
+#   {"text": "extracted text from image", "boxes": [[x1,y1,x2,y2], ...], "confidence": [0.98, ...]}
+
+[task]
+type = "ocr"
+name = "maiia.ocr.v1"
+
+[model]
+source = "huggingface"
+path = "monkt/paddleocr-onnx"
+# PaddleOCR has multiple ONNX files - detection and recognition
+# The task implementation should handle loading both models
+onnx_file = "det_model.onnx"  # Detection model (also needs rec_model.onnx)
+
+[inference]
+backend = "onnx"
+device = "cpu"
+num_threads = 4
+
+[service]
+grpc_port = 50051
+health_port = 8080
+name = "maiia-ocr-worker"
+enable_batching = true
+max_batch_size = 8
+batch_timeout_ms = 100

@@ -1,0 +1,41 @@
+# Token Classification / NER
+# HuggingFace task: token-classification
+#
+# Test with raw text (service handles tokenization):
+#   grpcurl -plaintext -d '{"task_name":"maiia.token-classification.v1","payload":"{\"text\":\"John lives in Paris\"}","request_id":"1"}' \
+#     127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+# 
+# Labels each token in a sequence (NER, POS tagging, chunking)
+# Popular models: bert-base-NER, dslim/bert-base-NER
+#
+# ONNX models on HuggingFace:
+#   - Xenova/bert-base-NER
+#   - optimum/bert-base-NER
+#   - Xenova/bert-base-multilingual-cased-ner-hrl
+#
+# Input format (from LangChain - service handles tokenization):
+#   {"text": "John lives in Paris"}
+#
+# Output format:
+#   {"outputs": {"logits": [[[0.1, 0.2, ...], ...]]}}  # One score vector per token
+
+[task]
+type = "token-classification"
+name = "maiia.token-classification.v1"
+
+[model]
+source = "huggingface"
+path = "Xenova/bert-base-NER"
+onnx_file = "onnx/model.onnx"
+
+[inference]
+device = "cpu"
+num_threads = 4
+
+[service]
+grpc_port = 50051
+health_port = 8080
+name = "maiia-ner-worker"
+enable_batching = true
+max_batch_size = 32
+batch_timeout_ms = 50

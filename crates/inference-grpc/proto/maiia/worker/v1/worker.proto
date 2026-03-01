@@ -1,0 +1,56 @@
+// Worker Service - Generic task execution (like Celery)
+// Used for: Router <-> Rust workers communication
+syntax = "proto3";
+
+package maiia.worker.v1;
+
+// Generic worker service - same pattern as Celery
+service WorkerService {
+  // Execute a task (like Celery task.apply_async)
+  rpc ExecuteTask(TaskRequest) returns (TaskResponse);
+  
+  // Execute a task with streaming response (for LLM, etc.)
+  rpc StreamTask(TaskRequest) returns (stream TaskChunk);
+}
+
+// Task request - mirrors Celery task call
+message TaskRequest {
+  // Task name (e.g., "llm.chat-completions.v1")
+  string task_name = 1;
+  
+  // JSON payload (args + kwargs serialized)
+  string payload = 2;
+  
+  // Request ID for tracing
+  string request_id = 3;
+  
+  // Environment metadata
+  map<string, string> metadata = 4;
+}
+
+// Task response - full result
+message TaskResponse {
+  // Success or error
+  bool success = 1;
+  
+  // JSON result (serialized response)
+  string result = 2;
+  
+  // Error message if failed
+  string error = 3;
+  
+  // Task execution time in ms
+  int64 duration_ms = 4;
+}
+
+// Task chunk - for streaming responses
+message TaskChunk {
+  // Chunk data (JSON serialized)
+  string data = 1;
+  
+  // Is this the final chunk?
+  bool done = 2;
+  
+  // Error if failed during stream
+  string error = 3;
+}

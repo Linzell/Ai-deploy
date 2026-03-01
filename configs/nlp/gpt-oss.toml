@@ -1,0 +1,56 @@
+# GPT-OSS - OpenAI's Open-Source LLM (GGUF version via llama.cpp)
+# Task type: text-generation
+#
+# Test with raw text:
+#   grpcurl -plaintext -d '{"task_name":"maiia.gpt-oss-gguf.v1","payload":"{\"text\":\"Explain quantum computing in simple terms\"}","request_id":"1"}' \
+#     127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# GPT-OSS is OpenAI's 20B parameter open-source language model.
+# This config uses the GGUF version via llama.cpp for better macOS/Metal support.
+#
+# Why GGUF instead of ONNX?
+#   - ONNX exports use custom onnxruntime-genai operators not available on macOS
+#   - The GroupQueryAttention operator has 12 inputs but ONNX Runtime only supports 7-9
+#   - GGUF via llama.cpp provides native Metal acceleration on macOS
+#
+# GGUF Models available (from HuggingFace):
+#   - unsloth/gpt-oss-20b-GGUF
+#       - gpt-oss-20b-Q4_K_M.gguf (~7GB, good quality/speed balance)
+#       - gpt-oss-20b-Q8_0.gguf (~12GB, higher quality)
+#       - gpt-oss-20b-f16.gguf (~24GB, full precision)
+#   - ggml-org/gpt-oss-20b-GGUF (official GGML organization)
+#
+# Model architecture:
+#   - Mixture of Experts (MoE): 32 experts, 4 active per token
+#   - Decoder-only transformer with KV-cache
+#   - Alternating sliding/full attention layers
+#
+# Input format:
+#   {"text": "Your prompt here"}
+#
+# Output format:
+#   {"text": "generated response...", "num_tokens": 150}
+
+[task]
+type = "text-generation"
+name = "maiia.gpt-oss-gguf.v1"
+
+[model]
+source = "huggingface"
+path = "unsloth/gpt-oss-20b-GGUF"
+gguf_file = "gpt-oss-20b-Q4_K_M.gguf" # Q4_K_M quantized (~7GB)
+
+[inference]
+backend = "llama" # Use llama.cpp via llama-cpp-2
+device = "gpu" # GPU recommended (Metal on macOS, CUDA on Linux)
+max_tokens = 1024 # Max tokens to generate
+temperature = 0.7
+top_p = 0.9
+n_gpu_layers = 99 # Offload all layers to GPU
+max_cache_length = 4096 # KV-cache context length
+
+[service]
+grpc_port = 50051
+health_port = 8080
+name = "maiia-gpt-oss-gguf-worker"
+enable_batching = false # Autoregressive models don't batch well

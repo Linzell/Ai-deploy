@@ -1,0 +1,50 @@
+# Automatic Speech Recognition (ASR)
+# HuggingFace task: automatic-speech-recognition
+#
+# Test with base64-encoded WAV audio:
+#   grpcurl -plaintext -d '{"task_name":"maiia.asr.v1","payload":"{\"audio\":\"'$(base64 -i audio.wav)'\"}","request_id":"1"}' \
+#     127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# Transcribes audio to text using OpenAI Whisper.
+#
+# Backend: Candle (native Rust implementation)
+# The ONNX Whisper exports have broken KV-cache handling, so we use the Candle
+# backend which loads safetensors directly and runs the model natively.
+#
+# Candle Whisper models (safetensors, from HuggingFace):
+#   - openai/whisper-tiny (39M params, fastest)
+#   - openai/whisper-base (74M params, good balance)
+#   - openai/whisper-small (244M params, better quality)
+#   - openai/whisper-medium (769M params, high quality)
+#   - openai/whisper-large-v3 (1.5B params, best quality)
+#
+# Quantized models (GGUF format, smaller and faster):
+#   - ggerganov/whisper.cpp (various quantized versions)
+#
+# Input format:
+#   {"audio": "<base64-encoded WAV data>"}
+#
+# Output format:
+#   {"text": "transcribed text from audio"}
+
+[task]
+type = "automatic-speech-recognition"
+name = "maiia.asr.v1"
+
+[model]
+source = "huggingface"
+path = "openai/whisper-base"              # Native safetensors model
+# For quantized: path = "ggerganov/whisper.cpp", gguf_file = "ggml-base.bin"
+
+[inference]
+backend = "candle"                        # Use Candle (ONNX Whisper has broken KV-cache)
+device = "cpu"                            # Use "metal" for Apple Silicon, "cuda" for NVIDIA
+num_threads = 4
+max_tokens = 256                          # Max transcription length
+temperature = 0.0                         # Greedy decoding (0.0) or sampling (>0)
+
+[service]
+grpc_port = 50051
+health_port = 8080
+name = "maiia-asr-worker"
+enable_batching = false                   # Audio typically processed one at a time

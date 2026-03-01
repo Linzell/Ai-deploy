@@ -1,0 +1,47 @@
+# Image Segmentation
+# HuggingFace task: image-segmentation
+#
+# Test with S3 image (service handles preprocessing):
+#   grpcurl -plaintext -d '{"task_name":"maiia.image-segmentation.v1","payload":"{\"image\":\"s3://my-bucket/photo.jpg\"}","request_id":"1"}' \
+#     127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# Test with base64 image:
+#   grpcurl -plaintext -d '{"task_name":"maiia.image-segmentation.v1","payload":"{\"image\":\"data:image/jpeg;base64,/9j/4AAQ...\"}","request_id":"1"}' \
+#     127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+# 
+# Segments images into semantic regions (semantic, instance, panoptic).
+# Popular models: facebook/mask2former-*, nvidia/segformer-*
+#
+# ONNX models on HuggingFace:
+#   - Xenova/segformer-b0-finetuned-ade-512-512 (semantic, ADE20K)
+#   - Xenova/segformer-b2-finetuned-cityscapes-1024-1024 (Cityscapes)
+#   - Xenova/detr-resnet-50-panoptic (panoptic)
+#
+# Input format (from LangChain - service handles preprocessing):
+#   {"image": "s3://bucket/image.jpg"}
+#   {"image": "data:image/jpeg;base64,..."}
+#
+# Output format:
+#   {"outputs": {"logits": [[[[class_per_pixel]]]]}}
+#   (Per-pixel class predictions)
+
+[task]
+type = "image-segmentation"
+name = "maiia.image-segmentation.v1"
+
+[model]
+source = "huggingface"
+path = "Xenova/segformer-b0-finetuned-ade-512-512"
+onnx_file = "onnx/model.onnx"
+
+[inference]
+device = "cpu"
+num_threads = 4
+
+[service]
+grpc_port = 50051
+health_port = 8080
+name = "maiia-image-segmentation-worker"
+enable_batching = true
+max_batch_size = 4
+batch_timeout_ms = 200

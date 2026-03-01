@@ -1,0 +1,61 @@
+# BGE-M3 - Multi-Functionality Multi-Lingual Multi-Granularity Embedding Model
+# HuggingFace: BAAI/bge-m3 (ONNX: Xenova/bge-m3)
+#
+# Test with plain text (no prefix needed for BGE-M3):
+#   grpcurl -plaintext -d '{"task_name":"maiia.bge-m3.v1","payload":"{\"text\":\"What is the capital of France?\"}","request_id":"1"}' 127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# Test multilingual:
+#   grpcurl -plaintext -d '{"task_name":"maiia.bge-m3.v1","payload":"{\"text\":\"Quelle est la capitale de la France?\"}","request_id":"1"}' 127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# State-of-the-art multilingual embedding model with three retrieval modes.
+# 1024 dimensions, 8192 max tokens, 100+ languages.
+#
+# Key features:
+#   - Dense retrieval: Standard semantic embeddings (1024-dim)
+#   - Sparse retrieval: Learned sparse vectors (like SPLADE)
+#   - Multi-vector (ColBERT): Token-level embeddings for late interaction
+#
+# No prefix required (unlike E5/Nomic).
+#
+# Use cases:
+#   - Hybrid search (dense + sparse fusion)
+#   - Multilingual semantic search
+#   - Long document retrieval (8K context)
+#   - ColBERT-style reranking
+#
+# Model variants available:
+#   - onnx/model.onnx + onnx/model.onnx_data (2.2GB) - Full precision FP32
+#   - onnx/model_fp16.onnx (1.1GB) - Half precision FP16
+#   - onnx/model_int8.onnx (568MB) - INT8 quantized (recommended for CPU)
+#   - onnx/model_quantized.onnx (569MB) - Dynamic quantization
+#
+# Input format (from LangChain):
+#   {"text": "Your query or document text here"}
+#   (Rust handles tokenization)
+#
+# Output format (depends on ONNX export):
+#   {"outputs": {"last_hidden_state": [[[0.1, ...]]]}}  # Dense embeddings
+#   Note: For dense, mean pool then normalize. Full BGE-M3 may have multiple outputs.
+
+[task]
+type = "feature-extraction"
+name = "maiia.bge-m3.v1"
+
+[model]
+source = "huggingface"
+path = "Xenova/bge-m3"
+# Using INT8 quantized model - smaller (568MB vs 2.2GB) and self-contained (no external data)
+# For full precision, use "onnx/model.onnx" (requires downloading 2.2GB external data file)
+onnx_file = "onnx/model_int8.onnx"
+
+[inference]
+device = "cpu"
+num_threads = 4
+
+[service]
+grpc_port = 50051
+health_port = 8080
+name = "maiia-bge-m3-worker"
+enable_batching = true
+max_batch_size = 16          # Smaller batch due to larger model
+batch_timeout_ms = 100

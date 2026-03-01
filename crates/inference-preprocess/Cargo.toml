@@ -1,0 +1,49 @@
+[package]
+name = "inference-preprocess"
+version.workspace = true
+edition.workspace = true
+description = "Preprocessing for inference: tokenization, image, and audio processing"
+
+[lints]
+workspace = true
+
+[features]
+default = ["text", "image", "audio"]
+# Text tokenization (HuggingFace tokenizers)
+text = ["dep:tokenizers"]
+# Mistral Tekken tokenizer support
+tekken = ["dep:tekken-rs"]
+# Image preprocessing (resize, normalize)
+image = ["dep:image", "dep:base64"]
+# Audio preprocessing (mel spectrogram for Whisper)
+audio = ["dep:hound", "dep:rustfft"]
+
+[dependencies]
+inference-core.path = "../inference-core"
+inference-loader-hf.path = "../inference-loader-hf"
+inference-loader-s3.path = "../inference-loader-s3"
+
+tokio.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+bytes.workspace = true
+
+# Tokenizers from HuggingFace (same as Python)
+tokenizers = { version = "0.21", optional = true }
+
+# Mistral Tekken tokenizer (for Voxtral and other Mistral models)
+tekken-rs = { version = "0.1", optional = true }
+
+# Image processing
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"], optional = true }
+base64 = { version = "0.22", optional = true }
+
+# Audio processing
+hound = { version = "3.5", optional = true }
+rustfft = { version = "6.2", optional = true }
+
+# For ndarray operations
+ndarray = "0.17"

@@ -1,0 +1,16 @@
+[package]
+name = "inference-loader-hf"
+version.workspace = true
+edition.workspace = true
+description = "HuggingFace Hub loader for inference service"
+
+[lints]
+workspace = true
+
+[dependencies]
+inference-core = { path = "../inference-core" }
+tokio.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+bytes.workspace = true
+hf-hub.workspace = true

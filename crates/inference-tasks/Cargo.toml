@@ -1,0 +1,81 @@
+[package]
+name = "inference-tasks"
+version.workspace = true
+edition.workspace = true
+description = "Task implementations and registry for inference service"
+
+[lints]
+workspace = true
+
+[features]
+default = ["preprocess", "postprocess"]
+# Enable preprocessing (tokenization, image, audio)
+preprocess = ["dep:inference-preprocess"]
+# Enable postprocessing (decode tokens, extract labels, format outputs)
+postprocess = ["dep:inference-postprocess"]
+# Metal/CoreML support for macOS
+coreml = ["ort/coreml"]
+# CUDA support for Linux/Windows
+cuda = ["ort/cuda"]
+# Candle backend for text-generation and seq2seq (Metal on macOS, CUDA on Linux)
+candle = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers", "dep:safetensors", "dep:async-stream", "dep:futures", "dep:tokio-stream", "dep:base64", "dep:hound", "dep:tekken-rs", "dep:byteorder"]
+candle-metal = ["candle", "candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
+candle-cuda = ["candle", "candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
+# Llama.cpp backend for GGUF models (GPT-OSS-20B, etc.)
+llama = ["dep:llama-cpp-2", "dep:encoding_rs", "dep:async-stream", "dep:futures", "dep:tokio-stream"]
+
+[dependencies]
+inference-core.path = "../inference-core"
+inference-grpc.path = "../inference-grpc"
+inference-loader-hf.path = "../inference-loader-hf"
+inference-loader-s3.path = "../inference-loader-s3"
+inference-preprocess = { path = "../inference-preprocess", optional = true }
+inference-postprocess = { path = "../inference-postprocess", optional = true }
+
+tokio.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+bytes.workspace = true
+
+# ONNX Runtime for inference
+# Use default features (download-binaries, tls-native, copy-dylibs, ndarray)
+ort = "2.0.0-rc.11"
+ndarray = "0.17"
+
+# Candle (Rust-native ML framework) for text-generation
+# Modern LLMs (Qwen3, Llama 3.x, Mistral) don't have ONNX exports,
+# so we use candle to load safetensors directly from HuggingFace.
+candle-core = { workspace = true, optional = true }
+candle-nn = { workspace = true, optional = true }
+candle-transformers = { workspace = true, optional = true }
+tokenizers = { version = "0.21", optional = true }
+safetensors = { version = "0.4", optional = true }
+
+# Streaming support for candle text generation
+async-stream = { version = "0.3", optional = true }
+futures = { version = "0.3", optional = true }
+tokio-stream = { version = "0.1", optional = true }
+
+# Audio decoding for candle seq2seq (Whisper ASR)
+base64 = { version = "0.22", optional = true }
+hound = { version = "3.5", optional = true }
+
+# Tekken tokenizer for Mistral Voxtral models
+tekken-rs = { version = "0.1", optional = true }
+
+# Byte order reading for mel filter files
+byteorder = { version = "1.5", optional = true }
+
+# llama.cpp bindings for GGUF models (GPT-OSS-20B, etc.)
+# Provides Metal support on macOS and CUDA on Linux/Windows
+llama-cpp-2 = { version = "0.1", optional = true }
+encoding_rs = { version = "0.8", optional = true }
+
+# Random number generation for sampling in seq2seq
+rand = "0.8"
+
+[dev-dependencies]
+tempfile = "3"

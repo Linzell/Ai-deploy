@@ -1,0 +1,48 @@
+# Image-to-Text / OCR / Image Captioning
+# HuggingFace task: image-to-text
+#
+# Test with S3 image (service handles preprocessing):
+#   grpcurl -plaintext -d '{"task_name":"maiia.ocr.v1","payload":"{\"image\":\"s3://my-bucket/document.jpg\"}","request_id":"1"}' \
+#     127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# Test with base64 image:
+#   grpcurl -plaintext -d '{"task_name":"maiia.ocr.v1","payload":"{\"image\":\"data:image/jpeg;base64,/9j/4AAQ...\"}","request_id":"1"}' \
+#     127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+# 
+# Extracts text from images (OCR) or generates captions.
+# Popular models: microsoft/trocr-*, Salesforce/blip-*
+#
+# ONNX models on HuggingFace:
+#   - Xenova/trocr-small-printed (printed text OCR)
+#   - Xenova/trocr-small-handwritten (handwritten OCR)
+#   - Xenova/vit-gpt2-image-captioning (image captioning)
+#   - onnx-community/Florence-2-base-ft (general vision-language)
+#
+# Input format (from LangChain - service handles preprocessing):
+#   {"image": "s3://bucket/document.jpg"}
+#   {"image": "data:image/jpeg;base64,..."}
+#
+# Output format (encoder):
+#   {"outputs": {"encoder_hidden_states": [[...]]}}
+#   (Then decode with decoder model)
+
+[task]
+type = "image-to-text"
+name = "maiia.ocr.v1"
+
+[model]
+source = "huggingface"
+path = "Xenova/trocr-small-printed"
+onnx_file = "onnx/encoder_model.onnx"
+
+[inference]
+device = "cpu"
+num_threads = 4
+
+[service]
+grpc_port = 50051
+health_port = 8080
+name = "maiia-ocr-worker"
+enable_batching = true
+max_batch_size = 8
+batch_timeout_ms = 100

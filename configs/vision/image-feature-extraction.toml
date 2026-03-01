@@ -1,0 +1,50 @@
+# Image Feature Extraction
+# HuggingFace task: image-feature-extraction
+#
+# Test with S3 image (service handles preprocessing):
+#   grpcurl -plaintext -d '{"task_name":"maiia.image-feature-extraction.v1","payload":"{\"image\":\"s3://my-bucket/photo.jpg\"}","request_id":"1"}' \
+#     127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# Test with base64 image:
+#   grpcurl -plaintext -d '{"task_name":"maiia.image-feature-extraction.v1","payload":"{\"image\":\"data:image/jpeg;base64,/9j/4AAQ...\"}","request_id":"1"}' \
+#     127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+# 
+# Extracts dense vector representations from images using ViT.
+# Uses DINOv2 - self-supervised vision transformer with excellent features.
+#
+# ONNX models on HuggingFace (image-only, no text input needed):
+#   - Xenova/dinov2-small (DINOv2 small, 384-dim, recommended)
+#   - Xenova/dinov2-base (DINOv2 base, 768-dim)
+#   - Xenova/vit-base-patch16-224-in21k (ViT pretrained)
+#
+# Note: CLIP models (clip-vit-*) require BOTH image AND text input.
+# For image-only feature extraction, use DINOv2 or ViT models.
+#
+# Input format (from LangChain - service handles preprocessing):
+#   {"image": "s3://bucket/image.jpg"}
+#   {"image": "data:image/jpeg;base64,..."}
+#
+# Output format:
+#   {"outputs": {"last_hidden_state": [[...]], "pooler_output": [[...]]}}
+#   (Image embeddings)
+
+[task]
+type = "image-feature-extraction"
+name = "maiia.image-feature-extraction.v1"
+
+[model]
+source = "huggingface"
+path = "Xenova/dinov2-small"
+onnx_file = "onnx/model.onnx"
+
+[inference]
+device = "cpu"
+num_threads = 4
+
+[service]
+grpc_port = 50051
+health_port = 8080
+name = "maiia-image-feature-extraction-worker"
+enable_batching = true
+max_batch_size = 32
+batch_timeout_ms = 50

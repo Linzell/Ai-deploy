@@ -1,0 +1,49 @@
+# Object Detection
+# HuggingFace task: object-detection
+#
+# Test with S3 image (service handles preprocessing):
+#   grpcurl -plaintext -d '{"task_name":"maiia.object-detection.v1","payload":"{\"image\":\"s3://my-bucket/photo.jpg\"}","request_id":"1"}' \
+#     127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# Test with base64 image:
+#   grpcurl -plaintext -d '{"task_name":"maiia.object-detection.v1","payload":"{\"image\":\"data:image/jpeg;base64,/9j/4AAQ...\"}","request_id":"1"}' \
+#     127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+# 
+# Detects and localizes objects in images.
+# Popular models: facebook/detr-*, hustvl/yolos-*
+#
+# ONNX models on HuggingFace:
+#   - Xenova/detr-resnet-50 (DETR, COCO)
+#   - Xenova/yolos-tiny (YOLOS, fast)
+#   - Xenova/yolos-small (YOLOS, balanced)
+#   - onnx-community/yolov10n (YOLOv10 nano)
+#
+# Input format (from LangChain - service handles preprocessing):
+#   {"image": "s3://bucket/image.jpg"}
+#   {"image": "data:image/jpeg;base64,..."}
+#   {"image": "/local/path/image.png"}
+#
+# Output format:
+#   {"outputs": {"logits": [[...]], "pred_boxes": [[...]]}}
+#   (Class logits + bounding boxes [cx, cy, w, h] normalized)
+
+[task]
+type = "object-detection"
+name = "maiia.object-detection.v1"
+
+[model]
+source = "huggingface"
+path = "Xenova/detr-resnet-50"
+onnx_file = "onnx/model.onnx"
+
+[inference]
+device = "cpu"
+num_threads = 4
+
+[service]
+grpc_port = 50051
+health_port = 8080
+name = "maiia-object-detection-worker"
+enable_batching = true
+max_batch_size = 8
+batch_timeout_ms = 100

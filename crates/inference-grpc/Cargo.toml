@@ -1,0 +1,22 @@
+[package]
+name = "inference-grpc"
+version.workspace = true
+edition.workspace = true
+description = "gRPC server for inference service"
+
+[lints]
+workspace = true
+
+[dependencies]
+inference-core = { path = "../inference-core" }
+tokio.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+tonic.workspace = true
+tonic-reflection.workspace = true
+prost.workspace = true
+tokio-stream = "0.1"
+async-stream = "0.3"
+
+[build-dependencies]
+tonic-build.workspace = true

@@ -1,0 +1,44 @@
+# Feature Extraction / Embeddings
+# HuggingFace task: feature-extraction
+#
+# Test with raw text (service handles tokenization):
+#   grpcurl -plaintext -d '{"task_name":"maiia.feature-extraction.v1","payload":"{\"text\":\"Hello world\"}","request_id":"1"}' 127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# Batch test:
+#   grpcurl -plaintext -d '{"task_name":"maiia.feature-extraction.v1","payload":"{\"text\":[\"Hello world\",\"How are you?\"]}","request_id":"1"}' 127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+# 
+# Extracts dense vector representations from text.
+# Popular models: BGE-M3, all-MiniLM-L6-v2, sentence-transformers/*
+#
+# ONNX models on HuggingFace:
+#   - Xenova/bge-m3 (multilingual, 1024 dim)
+#   - Xenova/all-MiniLM-L6-v2 (384 dim, fast)
+#   - aapot/bge-m3-onnx (dense + sparse + colbert)
+#
+# Input format (from LangChain - service handles tokenization):
+#   {"text": "What is machine learning?"}
+#   {"text": ["query 1", "query 2", "query 3"]}
+#
+# Output format:
+#   {"outputs": {"last_hidden_state": [[[0.1, 0.2, ...]]]}}
+
+[task]
+type = "feature-extraction"
+name = "maiia.feature-extraction.v1"
+
+[model]
+source = "huggingface"
+path = "Xenova/all-MiniLM-L6-v2"         # Or: Xenova/bge-m3, aapot/bge-m3-onnx
+onnx_file = "onnx/model.onnx"
+
+[inference]
+device = "cpu"
+num_threads = 4
+
+[service]
+grpc_port = 50051
+health_port = 8080
+name = "maiia-feature-extraction-worker"
+enable_batching = true
+max_batch_size = 64
+batch_timeout_ms = 50

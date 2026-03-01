@@ -1,0 +1,17 @@
+[package]
+name = "inference-loader-s3"
+version.workspace = true
+edition.workspace = true
+description = "AWS S3 loader for inference service"
+
+[lints]
+workspace = true
+
+[dependencies]
+inference-core = { path = "../inference-core" }
+tokio.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+bytes.workspace = true
+aws-sdk-s3.workspace = true
+aws-config.workspace = true

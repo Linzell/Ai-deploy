@@ -1,0 +1,41 @@
+# Fill-Mask / Masked Language Model
+# HuggingFace task: fill-mask
+#
+# Test with masked text (service handles tokenization):
+#   grpcurl -plaintext -d '{"task_name":"maiia.fill-mask.v1","payload":"{\"text\":\"The sky is [MASK] today.\"}","request_id":"1"}' \
+#     127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+# 
+# Predicts masked tokens in a sequence.
+# Popular models: bert-base-uncased, roberta-base, xlm-roberta-base
+#
+# ONNX models on HuggingFace:
+#   - Xenova/bert-base-uncased
+#   - Xenova/roberta-base
+#   - Xenova/xlm-roberta-base
+#
+# Input format (from LangChain - service handles tokenization):
+#   {"text": "The [MASK] is blue."}  # [MASK] for BERT, <mask> for RoBERTa
+#
+# Output format:
+#   {"outputs": {"logits": [[[...], [...], [...]]]}}  # Vocab scores per position
+
+[task]
+type = "fill-mask"
+name = "maiia.fill-mask.v1"
+
+[model]
+source = "huggingface"
+path = "Xenova/bert-base-uncased"
+onnx_file = "onnx/model.onnx"
+
+[inference]
+device = "cpu"
+num_threads = 4
+
+[service]
+grpc_port = 50051
+health_port = 8080
+name = "maiia-fill-mask-worker"
+enable_batching = true
+max_batch_size = 32
+batch_timeout_ms = 50

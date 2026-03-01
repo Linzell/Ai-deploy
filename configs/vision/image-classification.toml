@@ -1,0 +1,49 @@
+# Image Classification
+# HuggingFace task: image-classification
+#
+# Test with S3 image (service handles preprocessing):
+#   grpcurl -plaintext -d '{"task_name":"maiia.image-classification.v1","payload":"{\"image\":\"s3://my-bucket/cat.jpg\"}","request_id":"1"}' 127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# Test with base64 image:
+#   grpcurl -plaintext -d '{"task_name":"maiia.image-classification.v1","payload":"{\"image\":\"data:image/jpeg;base64,/9j/4AAQ...\"}","request_id":"1"}' 127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# Test with local file:
+#   grpcurl -plaintext -d '{"task_name":"maiia.image-classification.v1","payload":"{\"image\":\"/path/to/image.jpg\"}","request_id":"1"}' 127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+# 
+# Classifies images into categories.
+# Popular models: google/vit-*, microsoft/resnet-*, facebook/deit-*
+#
+# ONNX models on HuggingFace:
+#   - Xenova/vit-base-patch16-224 (ViT, ImageNet)
+#   - Xenova/resnet-50 (ResNet-50, ImageNet)
+#   - Xenova/mobilenet_v2_1.0_224 (MobileNet, fast)
+#   - Xenova/convnext-tiny-224 (ConvNeXt)
+#
+# Input format (from LangChain - service handles image preprocessing):
+#   {"image": "s3://bucket/image.jpg"}
+#   {"image": "/local/path/image.png"}
+#   {"image": "data:image/jpeg;base64,/9j/..."}
+#
+# Output format:
+#   {"outputs": {"logits": [[class_scores]]}}
+
+[task]
+type = "image-classification"
+name = "maiia.image-classification.v1"
+
+[model]
+source = "huggingface"
+path = "Xenova/vit-base-patch16-224"
+onnx_file = "onnx/model.onnx"
+
+[inference]
+device = "cpu"
+num_threads = 4
+
+[service]
+grpc_port = 50051
+health_port = 8080
+name = "maiia-image-classification-worker"
+enable_batching = true
+max_batch_size = 16
+batch_timeout_ms = 100

@@ -1,0 +1,45 @@
+# Audio-Text-to-Text (Speech-to-Text / ASR)
+# HuggingFace task: audio-text-to-text / automatic-speech-recognition
+#
+# Test with audio URL:
+#   grpcurl -plaintext -d '{"task_name":"maiia.audio-llm.v1","payload":"{\"audio\":\"s3://maiia-audio/speech.wav\"}","request_id":"1"}' 127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# Test with base64 audio:
+#   grpcurl -plaintext -d '{"task_name":"maiia.audio-llm.v1","payload":"{\"audio\":\"data:audio/wav;base64,UklGRi...\"}","request_id":"1"}' 127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+# 
+# Transcribes audio to text using Whisper.
+# Popular models: openai/whisper-*, onnx-community/whisper-*
+#
+# ONNX models on HuggingFace:
+#   - onnx-community/whisper-base (used here)
+#   - onnx-community/whisper-small
+#   - onnx-community/whisper-tiny
+#
+# Input format (from LangChain):
+#   {"audio": "s3://bucket/speech.wav"}
+#   {"audio": "data:audio/wav;base64,..."}
+#   (Rust handles mel spectrogram extraction)
+#
+# Output format:
+#   {"outputs": {"generated_text": "transcribed text..."}}
+
+[task]
+type = "audio-text-to-text"
+name = "maiia.audio-llm.v1"
+
+[model]
+source = "huggingface"
+path = "onnx-community/whisper-base"
+encoder_file = "onnx/encoder_model.onnx"
+decoder_file = "onnx/decoder_model_merged.onnx"
+
+[inference]
+device = "cpu"
+max_tokens = 448
+num_threads = 4
+
+[service]
+grpc_port = 50051
+health_port = 8080
+name = "maiia-audio-llm-worker"
+enable_batching = false

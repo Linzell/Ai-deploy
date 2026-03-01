@@ -1,0 +1,45 @@
+# Document Question Answering
+# HuggingFace task: document-question-answering
+#
+# Test with document image URL + question:
+#   grpcurl -plaintext -d '{"task_name":"maiia.document-qa.v1","payload":"{\"image\":\"s3://maiia-documents/invoice-001.png\",\"text\":\"What is the total amount?\"}","request_id":"1"}' 127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# Test with base64 image + question:
+#   grpcurl -plaintext -d '{"task_name":"maiia.document-qa.v1","payload":"{\"image\":\"data:image/png;base64,iVBORw0KGgo...\",\"text\":\"What is the invoice number?\"}","request_id":"1"}' 127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+# 
+# Answers questions about document images (forms, invoices, receipts).
+# Uses Florence-2 which supports OCR and document understanding.
+#
+# ONNX models on HuggingFace:
+#   - onnx-community/Florence-2-base-ft (Florence-2, used here)
+#   - onnx-community/Florence-2-large-ft (Florence-2 Large)
+#
+# Input format (from LangChain):
+#   {"image": "s3://bucket/document.png", "text": "What is the total?"}
+#   {"image": "data:image/png;base64,...", "text": "Extract the date"}
+#   (Rust handles image preprocessing + tokenization)
+#
+# Output format:
+#   {"outputs": {"generated_text": "extracted answer"}}
+
+[task]
+type = "document-question-answering"
+name = "maiia.document-qa.v1"
+
+[model]
+source = "huggingface"
+path = "onnx-community/Florence-2-base-ft"
+# Florence-2 uses encoder-decoder architecture
+encoder_file = "onnx/encoder_model.onnx"
+decoder_file = "onnx/decoder_model_merged.onnx"
+
+[inference]
+device = "cpu"
+max_tokens = 512
+num_threads = 4
+
+[service]
+grpc_port = 50051
+health_port = 8080
+name = "maiia-document-qa-worker"
+enable_batching = false  # Autoregressive generation - disable batching

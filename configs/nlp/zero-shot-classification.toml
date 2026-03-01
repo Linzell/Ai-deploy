@@ -1,0 +1,41 @@
+# Zero-Shot Classification
+# HuggingFace task: zero-shot-classification
+#
+# Test with text + candidate labels (service handles tokenization):
+#   grpcurl -plaintext -d '{"task_name":"maiia.zero-shot-classification.v1","payload":"{\"text\":\"I love this product!\",\"candidate_labels\":[\"positive\",\"negative\",\"neutral\"]}","request_id":"1"}' \
+#     127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+# 
+# Classifies text into categories without training on those specific categories.
+# Uses natural language inference (NLI) models.
+#
+# ONNX models on HuggingFace:
+#   - Xenova/nli-deberta-v3-small
+#   - Xenova/mobilebert-uncased-mnli
+#   - Xenova/bart-large-mnli
+#
+# Input format (from LangChain - service handles tokenization):
+#   {"text": "I love this product!", "candidate_labels": ["positive", "negative", "neutral"]}
+#
+# Output format:
+#   {"outputs": {"logits": [[entailment, neutral, contradiction]]}}
+
+[task]
+type = "zero-shot-classification"
+name = "maiia.zero-shot-classification.v1"
+
+[model]
+source = "huggingface"
+path = "Xenova/nli-deberta-v3-small"
+onnx_file = "onnx/model.onnx"
+
+[inference]
+device = "cpu"
+num_threads = 4
+
+[service]
+grpc_port = 50051
+health_port = 8080
+name = "maiia-zero-shot-worker"
+enable_batching = true
+max_batch_size = 32
+batch_timeout_ms = 50

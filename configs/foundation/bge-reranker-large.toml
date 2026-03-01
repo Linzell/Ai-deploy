@@ -1,0 +1,54 @@
+# BGE Reranker Large - Cross-Encoder Reranking Model
+# HuggingFace: BAAI/bge-reranker-large (ONNX: corto-ai/bge-reranker-large-onnx)
+#
+# Test with query-document pair (use text_pair for cross-encoder input):
+#   grpcurl -plaintext -d '{"task_name":"maiia.bge-reranker-large.v1","payload":"{\"text\":\"What is machine learning?\",\"text_pair\":\"Machine learning is a branch of artificial intelligence that enables computers to learn from data.\"}","request_id":"1"}' 127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# Test with another pair:
+#   grpcurl -plaintext -d '{"task_name":"maiia.bge-reranker-large.v1","payload":"{\"text\":\"best restaurants in Paris\",\"text_pair\":\"The Eiffel Tower is a famous landmark in Paris, France.\"}","request_id":"1"}' 127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# High-quality cross-encoder for reranking retrieval results.
+# Takes query-document pairs and outputs relevance scores.
+#
+# Key features:
+#   - Cross-encoder architecture (sees query and doc together)
+#   - Much more accurate than bi-encoder similarity
+#   - Use after initial retrieval to rerank top-k results
+#
+# Architecture:
+#   - Input: Query + Document pair (tokenized as "[CLS] query [SEP] doc [SEP]")
+#   - Output: Relevance logit (higher = more relevant)
+#
+# Use cases:
+#   - Reranking search results after initial retrieval
+#   - Improving RAG precision
+#   - Two-stage retrieval (fast bi-encoder -> slow reranker)
+#
+# Input format (from LangChain):
+#   {"text": "your query", "text_pair": "candidate document"}
+#   (Rust handles tokenization with proper [SEP] tokens)
+#
+# Output format:
+#   {"outputs": {"logits": [[0.85]]}}  # Single relevance score per pair
+#   Note: Higher score = more relevant. Use sigmoid for probability.
+
+[task]
+type = "text-classification"
+name = "maiia.bge-reranker-large.v1"
+
+[model]
+source = "huggingface"
+path = "corto-ai/bge-reranker-large-onnx"
+onnx_file = "model.onnx"
+
+[inference]
+device = "cpu"
+num_threads = 4
+
+[service]
+grpc_port = 50051
+health_port = 8080
+name = "maiia-bge-reranker-large-worker"
+enable_batching = true
+max_batch_size = 32
+batch_timeout_ms = 50

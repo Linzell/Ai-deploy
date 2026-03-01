@@ -1,0 +1,56 @@
+# Whisper Large v3 Turbo - Large-Scale ASR Model
+# HuggingFace: openai/whisper-large-v3-turbo
+#
+# Test with audio file URL:
+#   grpcurl -plaintext -d '{"task_name":"maiia.whisper-large-v3-turbo.v1","payload":"{\"audio\":\"s3://maiia-audio/meeting-recording.wav\"}","request_id":"1"}' 127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# Test with base64 audio:
+#   grpcurl -plaintext -d '{"task_name":"maiia.whisper-large-v3-turbo.v1","payload":"{\"audio\":\"data:audio/wav;base64,UklGRi4AAABXQVZFZm10...\"}","request_id":"1"}' 127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# OpenAI's production ASR model - fast and accurate speech recognition.
+# Supports 99 languages, optimized for speed vs large-v3.
+#
+# Backend: Candle (native Rust, no ONNX runtime overhead)
+# Uses candle-transformers Whisper implementation with KV-cache support.
+#
+# Key features:
+#   - 99 language support with automatic language detection
+#   - Turbo variant: 6x faster than large-v3 with similar quality
+#   - Trained on 1M+ hours of labeled audio
+#   - Handles accents, background noise, technical jargon
+#
+# Use cases:
+#   - Production speech-to-text
+#   - Meeting transcription
+#   - Podcast/video transcription
+#   - Voice command processing
+#
+# Input format (from LangChain):
+#   {"audio": "s3://bucket/speech.wav"}
+#   {"audio": "data:audio/wav;base64,..."}
+#   (Rust handles mel spectrogram extraction via Whisper audio module)
+#
+# Output format:
+#   {"text": "transcribed text here"}
+
+[task]
+type = "automatic-speech-recognition"
+name = "maiia.whisper-large-v3-turbo.v1"
+
+[model]
+source = "huggingface"
+path = "openai/whisper-large-v3-turbo"
+# Uses safetensors format with Candle backend (auto-selected for ASR tasks)
+# Files: config.json, tokenizer.json, model.safetensors
+
+[inference]
+device = "gpu"
+num_threads = 4
+
+[service]
+grpc_port = 50051
+health_port = 8080
+name = "maiia-whisper-large-v3-turbo-worker"
+enable_batching = true
+max_batch_size = 4 # Small batch due to large model + audio size
+batch_timeout_ms = 200

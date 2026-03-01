@@ -1,0 +1,45 @@
+# Image-Text-to-Text (Vision-Language Models)
+# HuggingFace task: image-text-to-text
+#
+# Test with image URL + text prompt:
+#   grpcurl -plaintext -d '{"task_name":"maiia.vlm.v1","payload":"{\"image\":\"s3://maiia-images/scene.jpg\",\"text\":\"Describe this image in detail\"}","request_id":"1"}' 127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# Test with base64 image + text prompt:
+#   grpcurl -plaintext -d '{"task_name":"maiia.vlm.v1","payload":"{\"image\":\"data:image/jpeg;base64,/9j/4AAQSkZJRg...\",\"text\":\"What objects are in this photo?\"}","request_id":"1"}' 127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+# 
+# Generates text from image + text input (chat with images, detailed captioning).
+# Popular models: llava-hf/*, Qwen/Qwen2-VL-*, microsoft/Florence-2-*
+#
+# ONNX models on HuggingFace:
+#   - onnx-community/Florence-2-base-ft (Florence-2, general VLM)
+#   - onnx-community/Florence-2-large-ft (Florence-2 large)
+#   - Xenova/moondream2 (small VLM)
+#
+# Input format (from LangChain):
+#   {"image": "s3://bucket/photo.jpg", "text": "Describe this image"}
+#   {"image": "data:image/jpeg;base64,...", "text": "What is in this photo?"}
+#   (Rust handles image preprocessing + tokenization)
+#
+# Output format:
+#   {"outputs": {"logits": [[...]]}}
+#   (Next token probabilities for autoregressive generation)
+
+[task]
+type = "image-text-to-text"
+name = "maiia.vlm.v1"
+
+[model]
+source = "huggingface"
+path = "onnx-community/Florence-2-base-ft"
+# Note: onnx_file is not used for seq2seq tasks - encoder/decoder discovery is automatic
+
+[inference]
+device = "gpu"
+max_tokens = 512
+num_threads = 4
+
+[service]
+grpc_port = 50051
+health_port = 8080
+name = "maiia-vlm-worker"
+enable_batching = false                  # Autoregressive generation

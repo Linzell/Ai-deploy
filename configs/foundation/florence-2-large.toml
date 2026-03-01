@@ -1,0 +1,70 @@
+# Florence-2 Large - Vision-Language Foundation Model
+# HuggingFace: microsoft/Florence-2-large-ft (ONNX: onnx-community/Florence-2-large-ft)
+#
+# Test with image URL + task prompt:
+#   grpcurl -plaintext -d '{"task_name":"maiia.florence-2-large.v1","payload":"{\"image\":\"s3://maiia-images/document.png\",\"text\":\"<OCR>\"}","request_id":"1"}' 127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# Test with base64 image + captioning:
+#   grpcurl -plaintext -d '{"task_name":"maiia.florence-2-large.v1","payload":"{\"image\":\"data:image/png;base64,iVBORw0KGgo...\",\"text\":\"<DETAILED_CAPTION>\"}","request_id":"1"}' 127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# Microsoft's unified vision-language model for multiple tasks.
+# Single model handles captioning, OCR, detection, segmentation, and more.
+#
+# Key features:
+#   - Unified architecture for 10+ vision tasks
+#   - Zero-shot and fine-tuned capabilities
+#   - Prompt-based task selection
+#   - 768x768 image resolution
+#
+# Supported tasks via prompts (include in text field):
+#   - "<CAPTION>" - Image captioning
+#   - "<DETAILED_CAPTION>" - Detailed image description
+#   - "<MORE_DETAILED_CAPTION>" - Very detailed description
+#   - "<OD>" - Object detection
+#   - "<DENSE_REGION_CAPTION>" - Region-level captions
+#   - "<REGION_PROPOSAL>" - Region proposals
+#   - "<OCR>" - Optical character recognition
+#   - "<OCR_WITH_REGION>" - OCR with bounding boxes
+#   - "<CAPTION_TO_PHRASE_GROUNDING>" - Ground text to regions
+#   - "<REFERRING_EXPRESSION_SEGMENTATION>" - Segment from text
+#   - "<REGION_TO_SEGMENTATION>" - Region to segmentation mask
+#   - "<OPEN_VOCABULARY_DETECTION>" - Open-vocab detection
+#   - "<REGION_TO_CATEGORY>" - Classify region
+#   - "<REGION_TO_DESCRIPTION>" - Describe region
+#
+# Use cases:
+#   - Document understanding (OCR + layout)
+#   - Image captioning for accessibility
+#   - Visual question answering
+#   - Object detection without task-specific models
+#
+# Input format (from LangChain):
+#   {"image": "s3://bucket/image.png", "text": "<OCR>"}
+#   {"image": "data:image/png;base64,...", "text": "<CAPTION>"}
+#   (Rust handles image preprocessing + tokenization)
+#
+# Output format:
+#   {"outputs": {"logits": [[...]]}}  # Token logits for generation
+#   Note: Full generation requires autoregressive decoding
+
+[task]
+type = "image-text-to-text"
+name = "maiia.florence-2-large.v1"
+
+[model]
+source = "huggingface"
+path = "onnx-community/Florence-2-large-ft"
+# Note: onnx_file is not used for seq2seq tasks - encoder/decoder discovery is automatic
+# The loader will download both encoder_model.onnx and vision_encoder.onnx
+
+[inference]
+device = "gpu"
+num_threads = 4
+
+[service]
+grpc_port = 50051
+health_port = 8080
+name = "maiia-florence-2-large-worker"
+enable_batching = true
+max_batch_size = 4 # Small batch due to large model + image size
+batch_timeout_ms = 200

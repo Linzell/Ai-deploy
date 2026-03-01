@@ -1,0 +1,48 @@
+# Depth Estimation
+# HuggingFace task: depth-estimation
+#
+# Test with S3 image (service handles preprocessing):
+#   grpcurl -plaintext -d '{"task_name":"maiia.depth-estimation.v1","payload":"{\"image\":\"s3://my-bucket/photo.jpg\"}","request_id":"1"}' \
+#     127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# Test with base64 image:
+#   grpcurl -plaintext -d '{"task_name":"maiia.depth-estimation.v1","payload":"{\"image\":\"data:image/jpeg;base64,/9j/4AAQ...\"}","request_id":"1"}' \
+#     127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+# 
+# Estimates depth from monocular images.
+# Popular models: Intel/dpt-*, LiheYoung/depth-anything-*
+#
+# ONNX models on HuggingFace:
+#   - Xenova/dpt-large (DPT, high quality)
+#   - Xenova/dpt-hybrid-midas (DPT hybrid)
+#   - Xenova/depth-anything-small-hf (Depth Anything, fast)
+#   - onnx-community/DepthPro-ONNX (Apple DepthPro)
+#
+# Input format (from LangChain - service handles preprocessing):
+#   {"image": "s3://bucket/image.jpg"}
+#   {"image": "data:image/jpeg;base64,..."}
+#
+# Output format:
+#   {"outputs": {"predicted_depth": [[depth_map]]}}
+#   (2D depth map, same spatial size as input)
+
+[task]
+type = "depth-estimation"
+name = "maiia.depth-estimation.v1"
+
+[model]
+source = "huggingface"
+path = "Xenova/depth-anything-small-hf"
+onnx_file = "onnx/model.onnx"
+
+[inference]
+device = "cpu"
+num_threads = 4
+
+[service]
+grpc_port = 50051
+health_port = 8080
+name = "maiia-depth-estimation-worker"
+enable_batching = true
+max_batch_size = 4
+batch_timeout_ms = 200

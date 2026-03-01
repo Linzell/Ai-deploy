@@ -1,0 +1,55 @@
+[package]
+name = "inference-service"
+version.workspace = true
+edition.workspace = true
+description = "Main entrypoint for inference service"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Metal/CoreML support for macOS (Apple Silicon)
+coreml = ["inference-tasks/coreml"]
+# CUDA support for Linux/Windows (NVIDIA GPU)
+cuda = ["inference-tasks/cuda"]
+# Candle backend for text-generation (Rust-native ML)
+candle = ["inference-tasks/candle"]
+candle-metal = ["inference-tasks/candle-metal"]
+candle-cuda = ["inference-tasks/candle-cuda"]
+# Llama.cpp backend for GGUF models (GPT-OSS-20B, etc.)
+llama = ["inference-tasks/llama"]
+
+[[bin]]
+name = "inference-service"
+path = "src/main.rs"
+
+[dependencies]
+# Workspace crates
+inference-core = { path = "../inference-core" }
+inference-loader-hf = { path = "../inference-loader-hf" }
+inference-loader-s3 = { path = "../inference-loader-s3" }
+inference-grpc = { path = "../inference-grpc" }
+inference-tasks = { path = "../inference-tasks" }
+
+# Runtime & async
+tokio.workspace = true
+async-trait.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# Config
+serde.workspace = true
+serde_json.workspace = true
+
+# Error handling
+anyhow.workspace = true
+
+[dev-dependencies]
+uuid = { version = "1.0", features = ["v4"] }
+tonic.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+base64 = "0.22"

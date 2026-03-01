@@ -1,0 +1,38 @@
+// Common types shared across all Maiia gRPC services
+syntax = "proto3";
+
+package maiia.common.v1;
+
+option java_multiple_files = true;
+option java_package = "com.maiia.common.v1";
+
+// Standard metadata for all requests
+message RequestMetadata {
+  // Unique request ID for tracing
+  string request_id = 1;
+  
+  // Environment metadata (e.g., ENVK8S)
+  map<string, string> env = 2;
+  
+  // Optional timeout in milliseconds
+  optional uint64 timeout_ms = 3;
+}
+
+// S3 object reference (used for large files like audio/images)
+message S3Reference {
+  string bucket = 1;
+  string key = 2;
+  optional string region = 3;
+}
+
+// Standard error details
+message ErrorDetail {
+  // Error code
+  string code = 1;
+  
+  // Human-readable message
+  string message = 2;
+  
+  // Field that caused the error (for validation errors)
+  optional string field = 3;
+}

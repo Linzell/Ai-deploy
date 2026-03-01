@@ -1,0 +1,35 @@
+[package]
+name = "inference-postprocess"
+version.workspace = true
+edition.workspace = true
+description = "Postprocessing for inference: decode tokens, extract labels, format outputs"
+
+[lints]
+workspace = true
+
+[features]
+default = ["text", "classification", "qa", "embeddings"]
+# Text decoding (tokenizers for decoding)
+text = ["dep:tokenizers"]
+# Classification tasks (softmax, labels)
+classification = []
+# Question answering (span extraction)
+qa = []
+# Embedding tasks (pooling, normalization)
+embeddings = []
+
+[dependencies]
+inference-core.path = "../inference-core"
+
+tokio.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+# Tokenizers for decoding (shared with preprocess)
+tokenizers = { version = "0.21", optional = true }
+
+# Math operations
+ndarray = "0.17"

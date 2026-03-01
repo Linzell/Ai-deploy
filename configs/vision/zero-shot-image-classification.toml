@@ -1,0 +1,49 @@
+# Zero-Shot Image Classification
+# HuggingFace task: zero-shot-image-classification
+#
+# Test with S3 image + candidate labels (service handles preprocessing):
+#   grpcurl -plaintext -d '{"task_name":"maiia.zero-shot-image-classification.v1","payload":"{\"image\":\"s3://my-bucket/animal.jpg\",\"candidate_labels\":[\"cat\",\"dog\",\"bird\"]}","request_id":"1"}' \
+#     127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+#
+# Test with base64 image:
+#   grpcurl -plaintext -d '{"task_name":"maiia.zero-shot-image-classification.v1","payload":"{\"image\":\"data:image/jpeg;base64,/9j/4AAQ...\",\"candidate_labels\":[\"indoors\",\"outdoors\"]}","request_id":"1"}' \
+#     127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+# 
+# Classifies images into arbitrary categories using vision-language models.
+# Uses CLIP dual-encoder architecture:
+#   - Vision encoder: processes images → image embeddings
+#   - Text encoder: processes candidate labels → text embeddings
+#   - Classification via cosine similarity + softmax
+#
+# ONNX models on HuggingFace (require vision_model.onnx + text_model.onnx):
+#   - Xenova/clip-vit-base-patch32 (CLIP)
+#   - Xenova/clip-vit-large-patch14 (CLIP large)
+#   - Xenova/siglip-base-patch16-224 (SigLIP)
+#
+# Input format (from LangChain - service handles preprocessing):
+#   {"image": "s3://bucket/image.jpg", "candidate_labels": ["cat", "dog", "bird"]}
+#   {"image": "data:image/jpeg;base64,...", "candidate_labels": ["label1", "label2"]}
+#
+# Output format:
+#   {"labels": ["cat", "dog", "bird"], "scores": [0.85, 0.10, 0.05], "label": "cat", "score": 0.85}
+
+[task]
+type = "zero-shot-image-classification"
+name = "maiia.zero-shot-image-classification.v1"
+
+[model]
+source = "huggingface"
+path = "Xenova/clip-vit-base-patch32"
+# Note: ClipTask automatically downloads vision_model.onnx and text_model.onnx
+
+[inference]
+device = "cpu"
+num_threads = 4
+
+[service]
+grpc_port = 50051
+health_port = 8080
+name = "maiia-zero-shot-image-worker"
+enable_batching = true
+max_batch_size = 16
+batch_timeout_ms = 100

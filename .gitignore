@@ -1,0 +1,35 @@
+# Build artifacts
+/target/
+**/target/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment files (keep .env.example)
+.env
+.env.local
+.env.*.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Cache
+/cache/
+*.cache
+
+# Generated proto files (can be regenerated)
+crates/inference-grpc/src/generated/
+
+# Model files (large)
+*.safetensors
+*.bin
+*.gguf
+*.pt
+*.onnx

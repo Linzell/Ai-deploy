@@ -1,0 +1,84 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/inference-core",
+  "crates/inference-loader-hf",
+  "crates/inference-loader-s3",
+  "crates/inference-preprocess",
+  "crates/inference-postprocess",
+  "crates/inference-grpc",
+  "crates/inference-tasks",
+  "crates/inference-service",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/Linzell/ai-deploy"
+
+# Lint configuration for the workspace
+[workspace.lints.rust]
+unsafe_code = "warn"
+
+[workspace.lints.clippy]
+# Enable useful pedantic lints
+pedantic = { level = "warn", priority = -1 }
+# Allow certain pedantic lints that are too noisy or not applicable
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+doc_markdown = "allow"
+similar_names = "allow"
+too_many_lines = "allow"
+struct_excessive_bools = "allow"
+# DSP/Audio processing requires numeric casts where precision loss is acceptable
+# These are intentional conversions for signal processing operations:
+# - f64 -> f32: Audio samples don't need f64 precision
+# - usize -> f32/f64: Sample indices for interpolation
+# - f64 -> usize: Computing array indices from floating-point math
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.49", features = ["full"] }
+async-trait = "0.1"
+
+# Serialization & Config
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# gRPC
+tonic = "0.12"
+tonic-reflection = "0.12"
+prost = "0.13"
+tonic-build = "0.12"
+
+# HuggingFace
+hf-hub = { version = "0.5", features = ["tokio"] }
+
+# AWS S3
+aws-sdk-s3 = "1.124"
+aws-config = { version = "1.8", features = ["behavior-version-latest"] }
+
+# ML (Candle)
+candle-core = "0.9"
+candle-nn = "0.9"
+candle-transformers = "0.9"
+
+# Utilities
+bytes = { version = "1.11", features = ["serde"] }
+futures = "0.3"
+uuid = { version = "1.0", features = ["v4"] }
