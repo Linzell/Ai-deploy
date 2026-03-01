@@ -11,29 +11,24 @@
 //! - `llama`: Force llama.cpp backend (requires gguf_file config)
 //! - `onnx`: Force ONNX backend
 
-use crate::clip::ClipTask;
 use crate::echo::EchoTask;
 use crate::error::{TaskError, TaskResult};
-use crate::onnx::OnnxTask;
-use crate::paddle_ocr::PaddleOcrTask;
-use crate::seq2seq::Seq2SeqTask;
+use inference_core::task::Task;
 use inference_core::{BackendType, Config, DataLoader, DataSourceType};
-use inference_grpc::task::Task;
 use inference_loader_hf::HfLoader;
 use inference_loader_s3::S3Loader;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::info;
 
+// ONNX backend types (always available)
+use inference_onnx::{ClipTask, OnnxTask, PaddleOcrTask, Seq2SeqTask};
+
 #[cfg(feature = "candle")]
-use crate::candle_seq2seq::CandleSeq2SeqTask;
-#[cfg(feature = "candle")]
-use crate::candle_text_gen::CandleTextGenTask;
-#[cfg(feature = "candle")]
-use crate::candle_tts::CandleTtsTask;
+use inference_candle::{CandleSeq2SeqTask, CandleTextGenTask, CandleTtsTask};
 
 #[cfg(feature = "llama")]
-use crate::llama_text_gen::LlamaTextGenTask;
+use inference_llama::LlamaTextGenTask;
 
 #[cfg(feature = "preprocess")]
 use inference_preprocess::Preprocessor;

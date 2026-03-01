@@ -19,7 +19,7 @@
 //! ## Usage
 //!
 //! ```rust,ignore
-//! use inference_tasks::LlamaTextGenTask;
+//! use inference_llama::LlamaTextGenTask;
 //! use inference_core::Config;
 //!
 //! // Config should have:
@@ -33,8 +33,8 @@
 
 use crate::error::{TaskError, TaskResult};
 use async_trait::async_trait;
+use inference_core::task::{Task, TaskChunk, TaskResult as GrpcTaskResult, TaskStream};
 use inference_core::Config;
-use inference_grpc::task::{Task, TaskChunk, TaskResult as GrpcTaskResult, TaskStream};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::sync::mpsc;

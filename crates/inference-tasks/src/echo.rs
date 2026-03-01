@@ -1,7 +1,7 @@
 //! Echo task for testing - no model required.
 
 use async_trait::async_trait;
-use inference_grpc::task::{Task, TaskResult};
+use inference_core::task::{Task, TaskResult};
 use tracing::info;
 
 /// Echo task - returns the input payload for testing.

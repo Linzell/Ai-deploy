@@ -38,7 +38,7 @@ use crate::error::{TaskError, TaskResult};
 ///
 /// ```rust,ignore
 /// use inference_core::DeviceType;
-/// use inference_tasks::candle_utils::resolve_device;
+/// use inference_candle::resolve_device;
 ///
 /// let device = resolve_device(&DeviceType::Metal)?;
 /// ```

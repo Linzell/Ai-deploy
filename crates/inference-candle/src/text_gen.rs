@@ -26,7 +26,7 @@
 //! ## Usage
 //!
 //! ```rust,ignore
-//! use inference_tasks::CandleTextGenTask;
+//! use inference_candle::CandleTextGenTask;
 //! use inference_core::Config;
 //!
 //! let config = Config::load()?;
@@ -36,15 +36,15 @@
 //! let result = task.execute(r#"{"text": "Hello"}"#, "req-1").await;
 //! ```
 
-use crate::candle_utils;
 use crate::error::{TaskError, TaskResult};
+use crate::utils;
 use async_trait::async_trait;
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::generation::LogitsProcessor;
 use candle_transformers::models::llama as llama_model;
+use inference_core::task::{Task, TaskChunk, TaskResult as GrpcTaskResult, TaskStream};
 use inference_core::Config;
-use inference_grpc::task::{Task, TaskChunk, TaskResult as GrpcTaskResult, TaskStream};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
@@ -247,7 +247,7 @@ impl CandleTextGenTask {
         );
 
         // Resolve device
-        let device = candle_utils::resolve_device(&config.device)?;
+        let device = utils::resolve_device(&config.device)?;
         info!(device = ?device, "Using device");
 
         // Detect architecture from config.json
@@ -256,7 +256,7 @@ impl CandleTextGenTask {
         info!(architecture = ?arch, "Detected model architecture");
 
         // Find safetensors files
-        let safetensors_files = candle_utils::find_weight_files(model_dir)?;
+        let safetensors_files = utils::find_weight_files(model_dir)?;
         if safetensors_files.is_empty() {
             return Err(TaskError::ModelNotFound(
                 "No .safetensors files found".into(),
@@ -280,7 +280,7 @@ impl CandleTextGenTask {
         let dtype = DType::F32;
 
         // Load model weights using safe (non-mmap) loading
-        let vb = candle_utils::load_safetensors_safe(&safetensors_files, dtype, &device)?;
+        let vb = utils::load_safetensors_safe(&safetensors_files, dtype, &device)?;
 
         // Load model based on architecture
         let model = Self::load_model(arch, &config_path, vb, &device, dtype)?;

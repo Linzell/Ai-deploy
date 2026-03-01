@@ -8,6 +8,9 @@ members = [
   "crates/inference-postprocess",
   "crates/inference-grpc",
   "crates/inference-tasks",
+  "crates/inference-onnx",
+  "crates/inference-candle",
+  "crates/inference-llama",
   "crates/inference-service",
 ]
 

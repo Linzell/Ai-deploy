@@ -2649,6 +2649,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "inference-candle"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "base64 0.22.1",
+ "candle-core",
+ "candle-nn",
+ "candle-transformers",
+ "futures",
+ "hound",
+ "inference-core",
+ "rand 0.8.5",
+ "safetensors 0.4.5",
+ "serde",
+ "serde_json",
+ "tekken-rs",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokenizers",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+]
+
+[[package]]
 name = "inference-core"
 version = "0.1.0"
 dependencies = [
@@ -2680,6 +2706,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "inference-llama"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "encoding_rs",
+ "inference-core",
+ "llama-cpp-2",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+]
+
+[[package]]
 name = "inference-loader-hf"
 version = "0.1.0"
 dependencies = [
@@ -2700,6 +2745,24 @@ dependencies = [
  "aws-sdk-s3",
  "bytes",
  "inference-core",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "inference-onnx"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "inference-core",
+ "inference-postprocess",
+ "inference-preprocess",
+ "ndarray 0.17.2",
+ "ort",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
 ]
@@ -2768,36 +2831,21 @@ dependencies = [
 name = "inference-tasks"
 version = "0.1.0"
 dependencies = [
- "async-stream",
  "async-trait",
- "base64 0.22.1",
- "byteorder",
- "bytes",
- "candle-core",
- "candle-nn",
- "candle-transformers",
- "encoding_rs",
- "futures",
- "hound",
+ "inference-candle",
  "inference-core",
  "inference-grpc",
+ "inference-llama",
  "inference-loader-hf",
  "inference-loader-s3",
+ "inference-onnx",
  "inference-postprocess",
  "inference-preprocess",
- "llama-cpp-2",
- "ndarray 0.17.2",
- "ort",
- "rand 0.8.5",
- "safetensors 0.4.5",
  "serde",
  "serde_json",
- "tekken-rs",
  "tempfile",
  "thiserror 2.0.18",
- "tokenizers",
  "tokio",
- "tokio-stream",
  "tracing",
 ]
 

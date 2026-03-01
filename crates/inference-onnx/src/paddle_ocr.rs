@@ -7,7 +7,7 @@
 //! ## Usage
 //!
 //! ```rust,ignore
-//! use inference_tasks::PaddleOcrTask;
+//! use inference_onnx::PaddleOcrTask;
 //! use inference_core::Config;
 //!
 //! let task = PaddleOcrTask::from_model_dir("/path/to/paddleocr", "ocr-task", &config)?;
@@ -37,8 +37,8 @@
 use crate::error::{TaskError, TaskResult};
 use crate::session::load_session_from_file;
 use async_trait::async_trait;
+use inference_core::task::{Task, TaskResult as GrpcTaskResult};
 use inference_core::Config;
-use inference_grpc::task::{Task, TaskResult as GrpcTaskResult};
 use ndarray::{s, Array4, ArrayD};
 use ort::session::Session;
 use ort::value::TensorRef;

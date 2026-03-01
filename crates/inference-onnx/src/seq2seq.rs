@@ -35,8 +35,9 @@ use crate::error::{TaskError, TaskResult};
 use crate::session::load_session_for_seq2seq;
 use crate::tensor_utils::{json_to_array2_i64, json_to_array_f32};
 use async_trait::async_trait;
+use inference_core::generation::{GenerationConfig, ModelArchitecture};
+use inference_core::task::{Task, TaskResult as GrpcTaskResult};
 use inference_core::Config;
-use inference_grpc::task::{Task, TaskResult as GrpcTaskResult};
 use ndarray::{Array2, Array3, Array4, ArrayD};
 use ort::session::Session;
 use ort::value::{TensorRef, ValueType};
@@ -50,63 +51,6 @@ use tracing::{debug, info};
 
 #[cfg(feature = "preprocess")]
 use inference_preprocess::Preprocessor;
-
-/// Generation configuration for autoregressive decoding.
-#[derive(Debug, Clone)]
-pub struct GenerationConfig {
-    /// Maximum number of tokens to generate
-    pub max_new_tokens: usize,
-    /// Temperature for sampling (1.0 = no change, <1.0 = sharper, >1.0 = smoother)
-    pub temperature: f32,
-    /// Top-p (nucleus) sampling threshold
-    pub top_p: f32,
-    /// Top-k sampling (0 = disabled)
-    pub top_k: usize,
-    /// Repetition penalty (1.0 = no penalty)
-    pub repetition_penalty: f32,
-    /// End-of-sequence token IDs
-    pub eos_token_ids: Vec<i64>,
-    /// Pad token ID
-    pub pad_token_id: i64,
-    /// Decoder start token ID (for encoder-decoder models)
-    pub decoder_start_token_id: i64,
-}
-
-impl Default for GenerationConfig {
-    fn default() -> Self {
-        Self {
-            max_new_tokens: 256,
-            temperature: 1.0,
-            top_p: 0.9,
-            top_k: 0,
-            repetition_penalty: 1.0,
-            eos_token_ids: vec![2], // Common EOS token
-            pad_token_id: 0,
-            decoder_start_token_id: 0,
-        }
-    }
-}
-
-impl GenerationConfig {
-    /// Create from inference config.
-    pub fn from_config(config: &Config) -> Self {
-        Self {
-            max_new_tokens: config.max_tokens,
-            temperature: config.temperature,
-            top_p: config.top_p,
-            ..Default::default()
-        }
-    }
-}
-
-/// Model architecture type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ModelArchitecture {
-    /// Decoder-only (GPT2, Llama, etc.)
-    DecoderOnly,
-    /// Encoder-decoder (T5, BART, Whisper, etc.)
-    EncoderDecoder,
-}
 
 /// Type of KV-cache for encoder-decoder models.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,6 +115,10 @@ pub struct Seq2SeqTask {
     decoder_output_names: Vec<String>,
     /// KV-cache input metadata (name, num_heads, head_dim) for each cache tensor
     kv_cache_inputs: Vec<KvCacheInfo>,
+    /// Maximum position embeddings supported by the model.
+    /// For Florence-2, this is 1026 (indices 0-1025).
+    /// Generation will stop if total sequence length would exceed this limit.
+    max_position_embeddings: usize,
 }
 
 impl Seq2SeqTask {
@@ -288,6 +236,8 @@ impl Seq2SeqTask {
             decoder_input_names,
             decoder_output_names,
             kv_cache_inputs,
+            // Decoder-only models typically support longer contexts
+            max_position_embeddings: 2048,
         })
     }
 
@@ -390,6 +340,23 @@ impl Seq2SeqTask {
         // Extract KV-cache metadata from model inputs
         let kv_cache_inputs = Self::extract_kv_cache_info(&decoder);
 
+        // Determine max position embeddings based on model type
+        // Florence-2 style models (with embed_tokens) have max 1024 positions in config,
+        // but the model uses an offset of 2 in Florence2LearnedPositionalEmbedding:
+        //   positions = torch.arange(past_key_values_length, past_key_values_length + seq_len)
+        //   return super().forward(positions + self.offset)  # offset = 2
+        // So max valid position index is (max_position_embeddings - 1) = 1023, which maps to
+        // embedding index 1023 + 2 = 1025, which is valid in the 1026-size embedding table.
+        // If we try position 1024, it becomes 1024 + 2 = 1026, which is out of bounds!
+        let max_position_embeddings = if decoder_uses_embeds {
+            // Florence-2 style: limited to 1024 positions (0-1023)
+            // This is the actual config value from the ONNX community model
+            1024
+        } else {
+            // Standard encoder-decoder (T5, BART, Whisper): typically 512-2048
+            2048
+        };
+
         Ok(Self {
             name: name.into(),
             architecture: ModelArchitecture::EncoderDecoder,
@@ -403,6 +370,7 @@ impl Seq2SeqTask {
             decoder_input_names,
             decoder_output_names,
             kv_cache_inputs,
+            max_position_embeddings,
         })
     }
 
@@ -1277,7 +1245,26 @@ impl Seq2SeqTask {
         }
 
         // Autoregressive generation loop
-        for step in 0..self.gen_config.max_new_tokens {
+        // Calculate initial sequence length for position tracking
+        let initial_seq_len = decoder_input_ids.shape()[1];
+        let max_generation_steps = self
+            .max_position_embeddings
+            .saturating_sub(initial_seq_len)
+            .min(self.gen_config.max_new_tokens);
+
+        for step in 0..max_generation_steps {
+            // Check if next token would exceed position limit
+            let current_position = initial_seq_len + step;
+            if current_position >= self.max_position_embeddings {
+                debug!(
+                    step = step,
+                    current_position = current_position,
+                    max_position_embeddings = self.max_position_embeddings,
+                    "Stopping generation: would exceed max position embeddings"
+                );
+                break;
+            }
+
             // Run decoder with KV-cache
             let (logits, new_kv_cache) = self
                 .run_decoder_step(
@@ -1390,7 +1377,26 @@ impl Seq2SeqTask {
         let encoder_attention_mask = Array2::ones((1, encoder_seq_len));
 
         // Autoregressive generation loop
-        for step in 0..self.gen_config.max_new_tokens {
+        // Initial sequence length is 1 (decoder_start_token_id)
+        let initial_seq_len = 1usize;
+        let max_generation_steps = self
+            .max_position_embeddings
+            .saturating_sub(initial_seq_len)
+            .min(self.gen_config.max_new_tokens);
+
+        for step in 0..max_generation_steps {
+            // Check if next token would exceed position limit
+            let current_position = initial_seq_len + step;
+            if current_position >= self.max_position_embeddings {
+                debug!(
+                    step = step,
+                    current_position = current_position,
+                    max_position_embeddings = self.max_position_embeddings,
+                    "Stopping generation: would exceed max position embeddings"
+                );
+                break;
+            }
+
             let (logits, new_kv_cache) = self
                 .run_decoder_step(
                     &decoder_input_ids,
@@ -1563,7 +1569,35 @@ impl Seq2SeqTask {
         current_attention_mask = new_mask;
 
         // Continue autoregressive generation
-        for step in 1..self.gen_config.max_new_tokens {
+        // Limit generation to avoid exceeding max_position_embeddings
+        // Current position = initial_seq_len + generated tokens
+        let max_generation_steps = self
+            .max_position_embeddings
+            .saturating_sub(initial_seq_len)
+            .min(self.gen_config.max_new_tokens);
+
+        if max_generation_steps == 0 {
+            debug!(
+                initial_seq_len = initial_seq_len,
+                max_position_embeddings = self.max_position_embeddings,
+                "Prompt already at max position, cannot generate"
+            );
+            return Ok(generated_tokens);
+        }
+
+        for step in 1..max_generation_steps {
+            // Check if next token would exceed position limit
+            let next_position = initial_seq_len + step;
+            if next_position >= self.max_position_embeddings {
+                debug!(
+                    step = step,
+                    next_position = next_position,
+                    max_position_embeddings = self.max_position_embeddings,
+                    "Stopping generation: would exceed max position embeddings"
+                );
+                break;
+            }
+
             // Get embedding for the new token
             let new_token_ids = Array2::from_elem((1, 1), next_token);
             let new_token_embed = self.run_embed_tokens(&new_token_ids).await?;
@@ -1610,6 +1644,8 @@ impl Seq2SeqTask {
                 debug!(
                     step = step,
                     tokens = generated_tokens.len(),
+                    position = initial_seq_len + step,
+                    max_positions = self.max_position_embeddings,
                     "Generation progress (Florence-2 style)"
                 );
             }

@@ -10,7 +10,7 @@
 //! ## Usage
 //!
 //! ```rust,ignore
-//! use inference_tasks::ClipTask;
+//! use inference_onnx::ClipTask;
 //! use inference_core::Config;
 //!
 //! let task = ClipTask::from_model_dir("/path/to/clip", "clip-task", &config)?;
@@ -33,8 +33,8 @@
 use crate::error::{TaskError, TaskResult};
 use crate::session::load_session_from_file;
 use async_trait::async_trait;
+use inference_core::task::{Task, TaskResult as GrpcTaskResult};
 use inference_core::Config;
-use inference_grpc::task::{Task, TaskResult as GrpcTaskResult};
 use ndarray::{Array2, ArrayD, Axis};
 use ort::session::Session;
 use ort::value::TensorRef;

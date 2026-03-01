@@ -19,21 +19,21 @@
 //! ## Usage
 //!
 //! ```rust,ignore
-//! use inference_tasks::CandleTtsTask;
+//! use inference_candle::CandleTtsTask;
 //! use inference_core::Config;
 //!
 //! let task = CandleTtsTask::from_model_dir("/path/to/model", "task-name", &config)?;
 //! let result = task.execute(r#"{"text": "Hello world"}"#, "req-1").await;
 //! ```
 
-use crate::candle_utils;
 use crate::error::{TaskError, TaskResult};
+use crate::utils;
 use async_trait::async_trait;
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_transformers::generation::LogitsProcessor;
 use candle_transformers::models::parler_tts::{Config as ParlerConfig, Model as ParlerModel};
+use inference_core::task::{Task, TaskResult as GrpcTaskResult};
 use inference_core::Config as AppConfig;
-use inference_grpc::task::{Task, TaskResult as GrpcTaskResult};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -123,7 +123,7 @@ impl CandleTtsTask {
         );
 
         // Determine device
-        let device = candle_utils::resolve_device(&config.device)?;
+        let device = utils::resolve_device(&config.device)?;
         info!(device = ?device, "Using device for TTS");
 
         // Load model config
@@ -179,7 +179,7 @@ impl CandleTtsTask {
             ));
         };
 
-        let vb = candle_utils::load_safetensors_safe(&weight_files, DType::F32, device)?;
+        let vb = utils::load_safetensors_safe(&weight_files, DType::F32, device)?;
 
         ParlerModel::new(config, vb)
             .map_err(|e| TaskError::ModelLoad(format!("Cannot create model: {e}")))

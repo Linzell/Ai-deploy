@@ -1,0 +1,59 @@
+[package]
+name = "inference-candle"
+version.workspace = true
+edition.workspace = true
+description = "Candle-based inference backend for text generation, seq2seq, and TTS"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Metal/CoreML support for macOS
+metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
+# CUDA support for Linux/Windows
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
+# Internal feature flags used for device resolution
+candle-metal = []
+candle-cuda = []
+
+[dependencies]
+inference-core.path = "../inference-core"
+
+tokio.workspace = true
+tokio-stream = "0.1"
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+
+# Candle ML framework
+candle-core.workspace = true
+candle-nn.workspace = true
+candle-transformers.workspace = true
+
+# Tokenizers
+tokenizers = "0.21"
+
+# Tekken tokenizer for Voxtral
+tekken-rs = "0.1"
+
+# Safetensors parsing (for safe loading)
+safetensors = "0.4"
+
+# Random number generation
+rand = "0.8"
+
+# Audio processing
+hound = "3.5"
+
+# Base64 for audio data
+base64 = "0.22"
+
+# Async streams
+async-stream = "0.3"
+
+[dev-dependencies]
+tempfile = "3"

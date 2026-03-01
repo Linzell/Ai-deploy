@@ -20,20 +20,20 @@
 //! ## Usage
 //!
 //! ```rust,ignore
-//! use inference_tasks::CandleSeq2SeqTask;
+//! use inference_candle::CandleSeq2SeqTask;
 //! use inference_core::Config;
 //!
 //! let task = CandleSeq2SeqTask::from_model_dir("/path/to/model", "task-name", &config)?;
 //! let result = task.execute(r#"{"text": "translate to German: Hello"}"#, "req-1").await;
 //! ```
 
-use crate::candle_utils;
 use crate::error::{TaskError, TaskResult};
+use crate::utils;
 use async_trait::async_trait;
 use base64::Engine;
 use candle_core::{DType, Device, IndexOp, Tensor};
+use inference_core::task::{Task, TaskChunk, TaskResult as GrpcTaskResult, TaskStream};
 use inference_core::Config as AppConfig;
-use inference_grpc::task::{Task, TaskChunk, TaskResult as GrpcTaskResult, TaskStream};
 use rand::distributions::weighted::WeightedIndex;
 use rand::distributions::Distribution;
 use rand::SeedableRng;
@@ -358,7 +358,7 @@ impl CandleSeq2SeqTask {
         );
 
         // Resolve device
-        let device = candle_utils::resolve_device(&app_config.device)?;
+        let device = utils::resolve_device(&app_config.device)?;
         info!(device = ?device, "Using device");
 
         // Detect architecture
@@ -433,10 +433,10 @@ impl CandleSeq2SeqTask {
         let mel_filters = Self::generate_mel_filters(config.num_mel_bins);
 
         // Find weights file(s)
-        let weights_paths = candle_utils::find_weight_files(model_dir)?;
+        let weights_paths = utils::find_weight_files(model_dir)?;
 
         // Check if GGUF (quantized)
-        if candle_utils::is_gguf(&weights_paths) {
+        if utils::is_gguf(&weights_paths) {
             info!("Loading quantized Whisper (GGUF)");
             let vb = candle_transformers::quantized_var_builder::VarBuilder::from_gguf(
                 &weights_paths[0],
@@ -457,7 +457,7 @@ impl CandleSeq2SeqTask {
                 num_shards = weights_paths.len(),
                 "Loading Whisper (safetensors)"
             );
-            let vb = candle_utils::load_safetensors_safe(&weights_paths, dtype, device)?;
+            let vb = utils::load_safetensors_safe(&weights_paths, dtype, device)?;
 
             let model = whisper_model::model::Whisper::load(&vb, config.clone())
                 .map_err(|e| TaskError::ModelLoad(format!("Failed to load Whisper: {e}")))?;
@@ -480,8 +480,8 @@ impl CandleSeq2SeqTask {
                 .map_err(|e| TaskError::ModelLoad(format!("Invalid T5 config: {e}")))?
         };
 
-        let weights_paths = candle_utils::find_weight_files(model_dir)?;
-        let vb = candle_utils::load_safetensors_safe(&weights_paths, dtype, device)?;
+        let weights_paths = utils::find_weight_files(model_dir)?;
+        let vb = utils::load_safetensors_safe(&weights_paths, dtype, device)?;
 
         let model = T5ForConditionalGeneration::load(vb, &config)
             .map_err(|e| TaskError::ModelLoad(format!("Failed to load T5: {e}")))?;
@@ -507,9 +507,9 @@ impl CandleSeq2SeqTask {
         let mel_filters = Self::generate_mel_filters(voxtral::N_MELS);
 
         // Load weights (sharded safetensors)
-        let weights_paths = candle_utils::find_weight_files(model_dir)?;
+        let weights_paths = utils::find_weight_files(model_dir)?;
         info!(num_shards = weights_paths.len(), "Loading Voxtral weights");
-        let vb = candle_utils::load_safetensors_safe(&weights_paths, dtype, device)?;
+        let vb = utils::load_safetensors_safe(&weights_paths, dtype, device)?;
 
         // Create model
         let model = VoxtralForConditionalGeneration::new(&config, vb)
