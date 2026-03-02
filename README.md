@@ -1,4 +1,4 @@
-# Maiia AI Inference Service
+# AI Inference Service
 
 Generic inference service in Rust. Single binary that runs **any** HuggingFace model type without code changes - configure via TOML files.
 
