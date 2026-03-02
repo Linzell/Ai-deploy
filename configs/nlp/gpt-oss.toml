@@ -2,7 +2,7 @@
 # Task type: text-generation
 #
 # Test with raw text:
-#   grpcurl -plaintext -d '{"task_name":"maiia.gpt-oss-gguf.v1","payload":"{\"text\":\"Explain quantum computing in simple terms\"}","request_id":"1"}' \
+#   grpcurl -plaintext -d '{"task_name":"maiia.gpt-oss.v1","payload":"{\"text\":\"Explain quantum computing in simple terms\"}","request_id":"1"}' \
 #     127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
 #
 # GPT-OSS is OpenAI's 20B parameter open-source language model.
