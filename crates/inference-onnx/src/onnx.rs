@@ -333,7 +333,7 @@ impl OnnxTask {
         &self,
         inputs: Vec<(String, TensorValue)>,
     ) -> TaskResult<HashMap<String, serde_json::Value>> {
-        use ort::session::input::SessionInputValue;
+        use ort::session::SessionInputValue;
 
         // Clone what we need for the blocking task
         let session = Arc::clone(&self.session);

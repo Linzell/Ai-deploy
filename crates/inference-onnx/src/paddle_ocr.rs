@@ -280,7 +280,7 @@ impl PaddleOcrTask {
         original_h: usize,
         original_w: usize,
     ) -> TaskResult<Vec<[f32; 4]>> {
-        use ort::session::input::SessionInputValue;
+        use ort::session::SessionInputValue;
 
         let session = Arc::clone(&self.det_session);
 
@@ -434,7 +434,7 @@ impl PaddleOcrTask {
 
     /// Run recognition model on a cropped text region.
     async fn recognize_text(&self, pixel_values: Array4<f32>) -> TaskResult<(String, f32)> {
-        use ort::session::input::SessionInputValue;
+        use ort::session::SessionInputValue;
 
         let session = Arc::clone(&self.rec_session);
         let char_dict = self.char_dict.clone();
