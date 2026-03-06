@@ -160,7 +160,7 @@ impl ClipTask {
 
     /// Encode an image using the vision encoder.
     async fn encode_image(&self, pixel_values: ArrayD<f32>) -> TaskResult<Array2<f32>> {
-        use ort::session::input::SessionInputValue;
+        use ort::session::SessionInputValue;
 
         let session = Arc::clone(&self.vision_session);
 
@@ -215,7 +215,7 @@ impl ClipTask {
     ///
     /// Note: CLIP text encoder only requires input_ids (no attention_mask).
     async fn encode_text(&self, input_ids: ArrayD<i64>) -> TaskResult<Array2<f32>> {
-        use ort::session::input::SessionInputValue;
+        use ort::session::SessionInputValue;
 
         let session = Arc::clone(&self.text_session);
 

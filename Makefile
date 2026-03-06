@@ -55,6 +55,7 @@ help:
 	@echo "      make run-qa                    Question answering"
 	@echo "      make run-text-generation       LLM / text generation"
 	@echo "      make run-text-generation-gpt   LLM / text generation (GPT OSS ONNX)"
+	@echo "      make run-qwen-3_5-35B          LLM / text generation (Qwen 3.5 35B)"
 	@echo ""
 	@echo "    Audio:"
 	@echo "      make run-asr                   Speech recognition (Whisper ONNX)"
@@ -149,6 +150,10 @@ run-text-generation:
 
 run-text-generation-gpt:
 	MAIIA_AI_CONFIG_PATH=./configs/nlp/gpt-oss.toml \
+	RUST_LOG=info cargo run -p inference-service --release $(LLAMA_FEATURES)
+
+run-qwen-3_5-35B:
+	MAIIA_AI_CONFIG_PATH=./configs/nlp/qwen-3_5-35B.toml \
 	RUST_LOG=info cargo run -p inference-service --release $(LLAMA_FEATURES)
 
 run-summarization:

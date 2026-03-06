@@ -456,7 +456,7 @@ impl Seq2SeqTask {
         let attention_mask = attention_mask.clone();
 
         tokio::task::spawn_blocking(move || {
-            use ort::session::input::SessionInputValue;
+            use ort::session::SessionInputValue;
 
             let input_ids_dyn = input_ids.clone().into_dyn();
             let attention_mask_dyn = attention_mask.clone().into_dyn();
@@ -505,7 +505,7 @@ impl Seq2SeqTask {
         let input_features = input_features.clone();
 
         tokio::task::spawn_blocking(move || {
-            use ort::session::input::SessionInputValue;
+            use ort::session::SessionInputValue;
 
             let input_features_dyn = input_features.into_dyn();
             let input_tensor = TensorRef::from_array_view(&input_features_dyn).map_err(|e| {
@@ -549,7 +549,7 @@ impl Seq2SeqTask {
         let pixel_values = pixel_values.clone();
 
         tokio::task::spawn_blocking(move || {
-            use ort::session::input::SessionInputValue;
+            use ort::session::SessionInputValue;
 
             let pixel_values_dyn = pixel_values.into_dyn();
             let input_tensor = TensorRef::from_array_view(&pixel_values_dyn).map_err(|e| {
@@ -599,7 +599,7 @@ impl Seq2SeqTask {
         let input_ids = input_ids.clone();
 
         tokio::task::spawn_blocking(move || {
-            use ort::session::input::SessionInputValue;
+            use ort::session::SessionInputValue;
 
             let input_ids_dyn = input_ids.into_dyn();
             let input_tensor = TensorRef::from_array_view(&input_ids_dyn)
@@ -660,7 +660,7 @@ impl Seq2SeqTask {
         let past_key_values = past_key_values.cloned();
 
         tokio::task::spawn_blocking(move || {
-            use ort::session::input::SessionInputValue;
+            use ort::session::SessionInputValue;
 
             let use_cache = past_key_values.is_some();
 
@@ -930,7 +930,7 @@ impl Seq2SeqTask {
         let encoder_attention_mask = encoder_attention_mask.cloned();
 
         tokio::task::spawn_blocking(move || {
-            use ort::session::input::SessionInputValue;
+            use ort::session::SessionInputValue;
 
             let use_cache = past_key_values.is_some();
 
