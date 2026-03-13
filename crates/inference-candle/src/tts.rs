@@ -463,7 +463,7 @@ mod tests {
     fn test_gen_config_defaults() {
         let config = TtsGenConfig::default();
         assert_eq!(config.max_steps, 2048);
-        assert_eq!(config.temperature, 0.0);
+        assert!(config.temperature.abs() < f64::EPSILON);
         assert!(config.top_p.is_none());
         // KV cache should have sensible defaults
         assert_eq!(config.kv_cache.max_length, 2048);

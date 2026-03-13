@@ -31,7 +31,7 @@
 //! ```
 
 use crate::error::{TaskError, TaskResult};
-use crate::session::load_session_from_file;
+use crate::session::load_session_cpu_on_coreml;
 use async_trait::async_trait;
 use inference_core::task::{Task, TaskResult as GrpcTaskResult};
 use inference_core::Config;
@@ -109,13 +109,15 @@ impl ClipTask {
         let vision_path =
             Self::find_model_file(model_dir, &["onnx/vision_model.onnx", "vision_model.onnx"])?;
         info!(path = %vision_path.display(), "Loading vision encoder");
-        let vision_session = load_session_from_file(&vision_path, config)?;
+        // Force CPU on CoreML — CoreML NeuralNetwork format accepts CLIP models
+        // but fails at runtime with "Unable to compute the prediction" errors.
+        let vision_session = load_session_cpu_on_coreml(&vision_path, config)?;
 
         // Find text model
         let text_path =
             Self::find_model_file(model_dir, &["onnx/text_model.onnx", "text_model.onnx"])?;
         info!(path = %text_path.display(), "Loading text encoder");
-        let text_session = load_session_from_file(&text_path, config)?;
+        let text_session = load_session_cpu_on_coreml(&text_path, config)?;
 
         // Log input names for debugging
         let vision_input_names: Vec<String> = vision_session

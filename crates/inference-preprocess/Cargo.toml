@@ -32,7 +32,7 @@ tracing.workspace = true
 bytes.workspace = true
 
 # Tokenizers from HuggingFace (same as Python)
-tokenizers = { version = "0.21", optional = true }
+tokenizers = { version = "0.22", optional = true }
 
 # Mistral Tekken tokenizer (for Voxtral and other Mistral models)
 tekken-rs = { version = "0.1", optional = true }

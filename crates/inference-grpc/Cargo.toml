@@ -7,6 +7,11 @@ description = "gRPC server for inference service"
 [lints]
 workspace = true
 
+[features]
+default = []
+# TLS support for gRPC server (uses rustls with ring crypto backend)
+tls = ["tonic/tls-ring"]
+
 [dependencies]
 inference-core = { path = "../inference-core" }
 tokio.workspace = true
@@ -15,8 +20,12 @@ tracing.workspace = true
 tonic.workspace = true
 tonic-reflection.workspace = true
 prost.workspace = true
+tonic-prost.workspace = true
 tokio-stream = "0.1"
 async-stream = "0.3"
+tower = { version = "0.5", features = ["limit"] }
+uuid.workspace = true
+futures.workspace = true
 
 [build-dependencies]
-tonic-build.workspace = true
+tonic-prost-build.workspace = true

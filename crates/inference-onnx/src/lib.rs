@@ -29,7 +29,7 @@ pub use onnx::{OnnxInput, OnnxOutput, OnnxTask};
 pub use paddle_ocr::{PaddleOcrInput, PaddleOcrOutput, PaddleOcrTask, TextBox};
 pub use seq2seq::{Seq2SeqInput, Seq2SeqOutput, Seq2SeqTask};
 pub use session::{
-    load_session_for_seq2seq, load_session_for_seq2seq_from_bytes, load_session_from_bytes,
+    load_session_cpu_on_coreml, load_session_cpu_on_coreml_from_bytes, load_session_from_bytes,
     load_session_from_file,
 };
 pub use tensor_utils::{

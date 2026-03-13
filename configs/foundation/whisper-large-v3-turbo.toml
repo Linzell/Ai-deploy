@@ -38,19 +38,15 @@ type = "automatic-speech-recognition"
 name = "maiia.whisper-large-v3-turbo.v1"
 
 [model]
-source = "huggingface"
 path = "openai/whisper-large-v3-turbo"
 # Uses safetensors format with Candle backend (auto-selected for ASR tasks)
 # Files: config.json, tokenizer.json, model.safetensors
 
 [inference]
+backend = "candle"                        # Uses Candle for native safetensors
 device = "gpu"
-num_threads = 4
 
 [service]
-grpc_port = 50051
-health_port = 8080
 name = "maiia-whisper-large-v3-turbo-worker"
-enable_batching = true
-max_batch_size = 4 # Small batch due to large model + audio size
+max_batch_size = 4                        # Small batch due to large model + audio size
 batch_timeout_ms = 200

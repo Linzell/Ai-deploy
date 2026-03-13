@@ -52,19 +52,14 @@ type = "image-text-to-text"
 name = "maiia.florence-2-large.v1"
 
 [model]
-source = "huggingface"
 path = "onnx-community/Florence-2-large-ft"
 # Note: onnx_file is not used for seq2seq tasks - encoder/decoder discovery is automatic
 # The loader will download both encoder_model.onnx and vision_encoder.onnx
 
 [inference]
 device = "gpu"
-num_threads = 4
 
 [service]
-grpc_port = 50051
-health_port = 8080
 name = "maiia-florence-2-large-worker"
-enable_batching = true
-max_batch_size = 4 # Small batch due to large model + image size
+max_batch_size = 4                        # Small batch due to large model + image size
 batch_timeout_ms = 200

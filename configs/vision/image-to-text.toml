@@ -31,18 +31,9 @@ type = "image-to-text"
 name = "maiia.ocr.v1"
 
 [model]
-source = "huggingface"
 path = "Xenova/trocr-small-printed"
 onnx_file = "onnx/encoder_model.onnx"
 
-[inference]
-device = "cpu"
-num_threads = 4
-
 [service]
-grpc_port = 50051
-health_port = 8080
 name = "maiia-ocr-worker"
-enable_batching = true
 max_batch_size = 8
-batch_timeout_ms = 100

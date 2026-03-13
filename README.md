@@ -1,122 +1,141 @@
 # AI Inference Service
 
-Generic inference service in Rust. Single binary that runs **any** HuggingFace model type without code changes - configure via TOML files.
+Generic inference service in Rust. Single binary that runs **any** HuggingFace model — just pass `--model` and go.
 
 ## Features
 
-- **Universal**: Supports all HuggingFace task types (NLP, Audio, Vision, Multimodal)
-- **Multi-backend**: ONNX Runtime (default), Candle (Rust-native), llama.cpp (GGUF models)
-- **Zero code changes**: Add new models by creating a TOML config file
-- **Fast**: Rust + optimized backends for high-performance inference
-- **Production-ready**: gRPC API, health checks, batching support
+- **One-command deploy**: `--model Xenova/bge-m3` auto-detects task, backend, and files
+- **HuggingFace browser**: `--task text-generation` lists popular models from HF Hub
+- **Multi-backend**: ONNX Runtime (default), Candle (Rust-native LLMs), llama.cpp (GGUF)
+- **Production-ready**: gRPC API, health checks, graceful shutdown, batching, concurrency limits
 - **Flexible loading**: HuggingFace Hub, S3/MinIO, or local files
 
 ## Quick Start
 
 ```bash
-# Run echo task (no model needed, for testing)
-make run-echo
+# Browse available task families
+cargo run --release
 
-# Run with a specific task
-make run-embed              # Text embeddings
-make run-text-classification  # Sentiment analysis
-make run-asr                # Speech recognition
-make run-image-classification # Image classification
+# Browse popular models for a task
+cargo run --release -- --task text-generation
 
-# Or with Docker
-docker compose up
+# Run a model (auto-detects everything)
+cargo run --release -- --model Xenova/bge-m3
+
+# Run an LLM (needs candle feature)
+cargo run --release --features candle-metal -- --model Qwen/Qwen2.5-0.5B-Instruct
+
+# Run from a TOML preset
+cargo run --release -- --config configs/foundation/bge-m3.toml
 ```
 
-## Supported Task Types
+## CLI Reference
 
-### NLP
-| Task | Config | Example Models |
-|------|--------|----------------|
-| Feature Extraction | `nlp/feature-extraction.toml` | BGE-M3, all-MiniLM-L6-v2 |
-| Text Classification | `nlp/text-classification.toml` | DistilBERT-SST2, RoBERTa |
-| Token Classification | `nlp/token-classification.toml` | BERT-NER |
-| Question Answering | `nlp/question-answering.toml` | DistilBERT-SQuAD |
-| Text Generation | `nlp/text-generation.toml` | GPT-2, Phi-3 |
-| Summarization | `nlp/summarization.toml` | BART, T5 |
-| Translation | `nlp/translation.toml` | OPUS-MT, NLLB |
-| Fill-Mask | `nlp/fill-mask.toml` | BERT, RoBERTa |
-| Zero-Shot Classification | `nlp/zero-shot-classification.toml` | DeBERTa-NLI |
-| Sentence Similarity | `nlp/sentence-similarity.toml` | MiniLM |
+```
+inference-service [OPTIONS]
 
-### Audio
-| Task | Config | Example Models |
-|------|--------|----------------|
-| Speech Recognition | `audio/automatic-speech-recognition.toml` | Whisper |
-| Text-to-Speech | `audio/text-to-speech.toml` | SpeechT5, MMS-TTS |
-| Audio Classification | `audio/audio-classification.toml` | Wav2Vec2, AST |
+Options:
+  -m, --model <MODEL>         HuggingFace model ID (auto-detects task/backend/files)
+  -t, --task <TASK>           Browse popular models for a task type
+  -c, --config <PATH>         Path to TOML config preset
+  -d, --device <DEVICE>       Device: auto, cpu, gpu, cuda, metal (default: auto)
+  -b, --backend <BACKEND>     Backend: auto, onnx, candle, llama
+      --max-tokens <N>        Max tokens for generation
+      --temperature <FLOAT>   Temperature (0.0-2.0)
+      --top-p <FLOAT>         Top-p sampling (0.0-1.0)
+      --num-threads <N>       CPU threads
+      --port <PORT>            gRPC port (default: 50051)
+      --n-gpu-layers <N>      GPU layers to offload (llama.cpp)
+      --limit <N>             Results to show when browsing (default: 10)
+```
 
-### Vision
-| Task | Config | Example Models |
-|------|--------|----------------|
-| Image Classification | `vision/image-classification.toml` | ViT, ResNet |
-| Object Detection | `vision/object-detection.toml` | DETR, YOLOS |
-| Image Segmentation | `vision/image-segmentation.toml` | SegFormer |
-| OCR / Image-to-Text | `vision/image-to-text.toml` | TrOCR |
-| Depth Estimation | `vision/depth-estimation.toml` | DPT, Depth Anything |
-| Image Features | `vision/image-feature-extraction.toml` | CLIP, DINOv2 |
-| Zero-Shot Image | `vision/zero-shot-image-classification.toml` | CLIP, SigLIP |
+### CLI Modes
 
-### Multimodal
-| Task | Config | Example Models |
-|------|--------|----------------|
-| Visual QA | `multimodal/visual-question-answering.toml` | ViLT, BLIP |
-| Document QA | `multimodal/document-question-answering.toml` | Donut, LayoutLM |
-| Vision-Language | `multimodal/image-text-to-text.toml` | Florence-2 |
+| Mode | Command | What it does |
+|------|---------|-------------|
+| Browse | `inference-service` | List task families (NLP, Audio, Vision, Multimodal) |
+| Search | `inference-service --task <task>` | Query HF API, show top models by downloads |
+| Run (model) | `inference-service --model <id>` | Auto-derive config from HF metadata, start server |
+| Run (preset) | `inference-service --config <path>` | Load TOML config, start server |
 
-### Foundation Models (Production-Ready)
+## Supported Tasks
 
-Pre-configured for popular production models with best practices:
+**NLP**: text-generation, text-classification, token-classification, feature-extraction,
+question-answering, summarization, translation, fill-mask, zero-shot-classification,
+sentence-similarity
 
-| Model | Config | Use Case | Make Target |
-|-------|--------|----------|-------------|
-| Multilingual E5 Large | `foundation/multilingual-e5-large.toml` | Cross-lingual semantic search (100+ languages) | `make run-e5-large` |
-| Nomic Embed Text v1 | `foundation/nomic-embed-text-v1.toml` | Matryoshka embeddings (truncate to any dim) | `make run-nomic` |
-| BGE-M3 | `foundation/bge-m3.toml` | Hybrid search (dense + sparse + ColBERT) | `make run-bge-m3` |
-| BGE Reranker Large | `foundation/bge-reranker-large.toml` | Cross-encoder reranking for RAG | `make run-reranker` |
-| Whisper Large v3 Turbo | `foundation/whisper-large-v3-turbo.toml` | Production ASR (99 languages) | `make run-whisper-large` |
-| Florence-2 Large | `foundation/florence-2-large.toml` | Vision-language (OCR, captioning, detection) | `make run-florence` |
+**Audio**: automatic-speech-recognition, text-to-speech, audio-classification
+
+**Vision**: image-classification, object-detection, image-segmentation, depth-estimation,
+image-to-text, image-feature-extraction, zero-shot-image-classification
+
+**Multimodal**: visual-question-answering, document-question-answering, image-text-to-text,
+audio-text-to-text
+
+## Backends
+
+| Backend | Feature Flag | Use Case | Models |
+|---------|--------------|----------|--------|
+| ONNX Runtime | (default) | Embeddings, classification, seq2seq, vision | All ONNX models |
+| Candle | `candle` / `candle-metal` / `candle-cuda` | Rust-native LLMs | Qwen, Llama, Mistral |
+| llama.cpp | `llama` | Quantized GGUF models | Any GGUF model |
+
+```bash
+# Build with specific backend
+cargo build --release --features candle-metal
+cargo build --release --features "candle-metal,llama"
+```
 
 ## Configuration
+
+### Auto-derivation (--model)
+
+When using `--model`, the service queries the HuggingFace API and auto-derives:
+
+| Field | Source |
+|-------|--------|
+| Task type | HF model card `pipeline_tag` |
+| Backend | Repo files: `.gguf` -> llama, `.safetensors` + text-gen -> candle, `.onnx` -> onnx |
+| ONNX file | Auto-discovered from repo (priority: `onnx/model.onnx` > `model.onnx` > first `.onnx`) |
+| Service name | `maiia-{task_type}-worker` |
+| Task name | `maiia.{task_type}.v1` |
+
+Override any auto-derived value with CLI flags (`--device`, `--backend`, `--max-tokens`, etc.).
+
+### Device Auto-Detection
+
+Device defaults to `auto` — the service probes for GPU support at startup:
+- **macOS**: uses Metal if available, falls back to CPU
+- **Linux**: uses CUDA if available, falls back to CPU
+- **llama.cpp backend**: auto-sets `n_gpu_layers=99` when GPU is detected
+
+To force a specific device, use `--device cpu`, `MAIIA_AI_DEVICE=cuda`, or `device = "gpu"` in TOML.
+Omitting the device setting enables auto-detection.
 
 ### Environment Variables
 
 All settings use `MAIIA_AI_` prefix:
 
 ```bash
-MAIIA_AI_CONFIG_PATH=./configs/nlp/feature-extraction.toml
-MAIIA_AI_TASK_TYPE=feature-extraction
-MAIIA_AI_MODEL_PATH=Xenova/all-MiniLM-L6-v2
-MAIIA_AI_MODEL_SOURCE=huggingface  # or: s3, local
-MAIIA_AI_DEVICE=cpu                # or: cuda, metal
 MAIIA_AI_GRPC_PORT=50051
+MAIIA_AI_DEVICE=auto              # auto (default), cpu, gpu, cuda, metal
+MAIIA_AI_LOG_FORMAT=json           # json or text
+MAIIA_AI_REQUEST_TIMEOUT_MS=300000
+MAIIA_AI_MAX_CONCURRENT_REQUESTS=64
+MAIIA_AI_SHUTDOWN_DRAIN_SECONDS=30
 ```
 
-### TOML Config File
+### TOML Config Presets
 
-```toml
-[task]
-type = "feature-extraction"        # Any string - fully generic
-name = "maiia.embed.v1"            # gRPC task name
+Pre-configured presets are available in `configs/` for common models.
+Use `--config` to load one:
 
-[model]
-source = "huggingface"             # huggingface, s3, local
-path = "Xenova/all-MiniLM-L6-v2"   # HF repo, S3 prefix, or local path
-onnx_file = "onnx/model.onnx"      # ONNX file within the model
-
-[inference]
-device = "cpu"                     # cpu, cuda, metal
-num_threads = 4
-
-[service]
-grpc_port = 50051
-enable_batching = true
-max_batch_size = 64
+```bash
+inference-service --config configs/foundation/bge-m3.toml
+inference-service --config configs/nlp/text-generation.toml
 ```
+
+Config layering: Rust defaults -> `configs/defaults.toml` -> model config -> env vars -> device auto-detection.
 
 ## API
 
@@ -128,48 +147,26 @@ service WorkerService {
 }
 
 message TaskRequest {
-  string task_name = 1;    // Must match config task.name
+  string task_name = 1;    // e.g., "maiia.text-generation.v1"
   string payload = 2;      // JSON with model inputs
   string request_id = 3;
 }
 ```
 
-### Input Format
-
-All models expect JSON with an `inputs` object containing named tensors:
-
-```json
-{
-  "inputs": {
-    "input_ids": [[101, 2054, 2003, 102]],
-    "attention_mask": [[1, 1, 1, 1]]
-  }
-}
-```
-
-### Output Format
-
-```json
-{
-  "outputs": {
-    "last_hidden_state": [[[0.1, 0.2, ...], ...]]
-  }
-}
-```
-
-## Testing
+### Testing
 
 ```bash
-# Run tests
-make test
+# Health check
+grpcurl -plaintext 127.0.0.1:50051 grpc.health.v1.Health/Check
 
-# Test gRPC (requires server running)
-make grpcurl-health
-make grpcurl-echo
-
-# Test with grpcurl manually
+# Echo test
 grpcurl -plaintext \
-  -d '{"task_name":"maiia.echo.v1", "payload":"{\"msg\":\"hello\"}", "request_id":"1"}' \
+  -d '{"task_name":"maiia.echo.v1", "payload":"{\"message\":\"hello\"}", "request_id":"1"}' \
+  127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
+
+# Embeddings
+grpcurl -plaintext \
+  -d '{"task_name":"maiia.feature-extraction.v1", "payload":"{\"text\":\"Hello world\"}", "request_id":"1"}' \
   127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
 ```
 
@@ -179,93 +176,63 @@ grpcurl -plaintext \
 # Build (ONNX only - default)
 docker build -t maiia-inference .
 
-# Build with Candle backend (Rust-native LLMs)
-docker build --build-arg FEATURES=candle -t maiia-inference .
-
-# Build with llama.cpp backend (GGUF models)
-docker build --build-arg FEATURES=llama -t maiia-inference .
-
-# Build with all backends
+# Build with Candle + llama backends
 docker build --build-arg FEATURES="candle,llama" -t maiia-inference .
 
-# Run with specific task
-TASK_CONFIG=nlp/feature-extraction.toml docker compose up
+# Run a model directly
+docker run --rm -p 50051:50051 maiia-inference --model Xenova/bge-m3
 
-# Run with Candle backend enabled
-FEATURES=candle docker compose up --build
+# Run from TOML preset
+docker run --rm -p 50051:50051 \
+  -v $(pwd)/configs:/app/configs:ro \
+  maiia-inference --config /app/configs/foundation/bge-m3.toml
 
-# Run with GPU (NVIDIA)
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
+# Docker Compose
+docker compose up                              # Default (echo task)
+MODEL=Xenova/bge-m3 docker compose up          # Run a model
+CONFIG=configs/echo.toml docker compose up     # TOML preset
+FEATURES=candle docker compose up --build      # With backend features
 ```
 
 ## Project Structure
 
 ```
 AI-deploy/
-├── Cargo.toml              # Workspace root
-├── Makefile                # Build/run commands
-├── Dockerfile
+├── Cargo.toml                # Workspace root
+├── Dockerfile                # Multi-stage build
 ├── docker-compose.yml
-├── configs/                # Task configurations
-│   ├── echo.toml           # Test task (no model)
-│   ├── nlp/                # NLP tasks
-│   ├── audio/              # Audio tasks
-│   ├── vision/             # Vision tasks
-│   ├── multimodal/         # Multimodal tasks
-│   └── foundation/         # Production-ready foundation models
-├── models/                 # Local model storage
+├── configs/                  # TOML presets (optional, for --config mode)
+│   ├── defaults.toml         # Shared defaults
+│   ├── echo.toml             # Test task (no model)
+│   ├── nlp/                  # NLP task presets
+│   ├── audio/                # Audio task presets
+│   ├── vision/               # Vision task presets
+│   ├── multimodal/           # Multimodal task presets
+│   └── foundation/           # Production model presets
+├── scripts/
+│   └── test-all-configs.sh   # Integration test suite
 └── crates/
-    ├── inference-core/       # Shared config, error types, generation config
-    ├── inference-onnx/       # ONNX Runtime backend (embeddings, seq2seq, vision)
+    ├── inference-service/    # Main binary (CLI, HF API client)
+    ├── inference-core/       # Config, error types, generation config
+    ├── inference-onnx/       # ONNX Runtime backend
     ├── inference-candle/     # Candle backend (Rust-native LLMs)
     ├── inference-llama/      # llama.cpp backend (GGUF models)
-    ├── inference-tasks/      # Facade crate (re-exports backends, task registry)
-    ├── inference-grpc/       # gRPC server, proto definitions
-    ├── inference-service/    # Main binary
+    ├── inference-tasks/      # Task registry (routes to backends)
+    ├── inference-grpc/       # gRPC server, health, batching
     ├── inference-preprocess/ # Tokenizers, image/audio preprocessing
-    ├── inference-postprocess/# Output decoding, post-processing
+    ├── inference-postprocess/# Output decoding
     ├── inference-loader-hf/  # HuggingFace Hub loader
     └── inference-loader-s3/  # S3/MinIO loader
 ```
 
-## Backends
-
-| Backend | Feature Flag | Use Case | Models |
-|---------|--------------|----------|--------|
-| ONNX Runtime | (default) | Embeddings, classification, seq2seq, vision | All ONNX models |
-| Candle | `candle` | Rust-native LLMs, no Python deps | Qwen3, Llama 3.x, Mistral |
-| llama.cpp | `llama` | Quantized GGUF models | Any GGUF model |
+## Development
 
 ```bash
-# Build with all backends
-cargo build --release --features "candle,llama"
-
-# Build with specific backend
-cargo build --release --features "candle"
+cargo test --workspace         # Run all tests
+cargo clippy --workspace -- -D warnings  # Lint
+cargo fmt --all                # Format code
+cargo doc --no-deps --open     # Generate & open docs
 ```
-
-## Adding a New Model
-
-1. Create a TOML config in `configs/`:
-
-```toml
-[task]
-type = "my-custom-task"
-name = "mycompany.custom.v1"
-
-[model]
-source = "local"
-path = "/models/my-model"
-onnx_file = "model.onnx"
-```
-
-2. Run:
-
-```bash
-MAIIA_AI_CONFIG_PATH=./configs/my-custom-task.toml cargo run --release
-```
-
-No code changes needed!
 
 ## License
 

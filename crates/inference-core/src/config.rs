@@ -1,9 +1,14 @@
 //! Configuration management via environment variables and TOML files.
 //!
 //! Configuration is loaded in the following order (later values override earlier):
-//! 1. Default values
-//! 2. TOML config file (if `MAIIA_AI_CONFIG_PATH` is set)
-//! 3. Environment variables with `MAIIA_AI_` prefix
+//! 1. Default values (hardcoded Rust defaults)
+//! 2. Base defaults TOML (`configs/defaults.toml`, auto-discovered)
+//! 3. Model-specific TOML config file (if `MAIIA_AI_CONFIG_PATH` is set)
+//! 4. Environment variables with `MAIIA_AI_` prefix
+//!
+//! The base defaults file eliminates boilerplate across model configs. It is
+//! auto-discovered relative to the model config path (same dir → parent → grandparent),
+//! or can be set explicitly via `MAIIA_AI_DEFAULTS_PATH`.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -139,12 +144,18 @@ impl std::fmt::Display for TaskType {
 }
 
 /// Device type for inference.
+///
+/// - `Auto` (default): probe for GPU at runtime, fall back to CPU if unavailable.
+/// - `Cpu`: force CPU inference.
+/// - `Gpu`: use the platform-preferred GPU (Metal on macOS, CUDA elsewhere).
+/// - `Cuda` / `Metal`: force a specific GPU backend.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum DeviceType {
     #[default]
+    Auto,
     Cpu,
-    /// Auto-detect GPU: Metal on macOS, CUDA on Linux/Windows
+    /// Platform-preferred GPU: Metal on macOS, CUDA elsewhere.
     Gpu,
     Cuda,
     Metal,
@@ -153,29 +164,59 @@ pub enum DeviceType {
 impl DeviceType {
     /// Resolve `Gpu` to platform-specific backend.
     /// Returns `Metal` on macOS, `Cuda` elsewhere.
+    /// `Auto` is **not** resolved here — use [`auto_detect_device`] first.
     #[must_use]
     pub fn resolve(&self) -> Self {
         match self {
-            DeviceType::Gpu => {
+            Self::Gpu => {
                 if cfg!(target_os = "macos") {
-                    DeviceType::Metal
+                    Self::Metal
                 } else {
-                    DeviceType::Cuda
+                    Self::Cuda
                 }
             }
             other => other.clone(),
         }
+    }
+
+    /// Returns `true` if no explicit device preference was set.
+    #[must_use]
+    pub const fn is_auto(&self) -> bool {
+        matches!(self, Self::Auto)
     }
 }
 
 impl From<&str> for DeviceType {
     fn from(s: &str) -> Self {
         match s.to_lowercase().as_str() {
-            "gpu" => DeviceType::Gpu,
-            "cuda" => DeviceType::Cuda,
-            "metal" | "mps" => DeviceType::Metal,
-            _ => DeviceType::Cpu,
+            "gpu" => Self::Gpu,
+            "cuda" => Self::Cuda,
+            "metal" | "mps" => Self::Metal,
+            "cpu" => Self::Cpu,
+            // "auto" and any unrecognized value → auto-detect
+            _ => Self::Auto,
         }
+    }
+}
+
+/// Probe for GPU availability at runtime and return the best device.
+///
+/// Detection strategy:
+/// - **macOS**: assume Metal is available (Apple Silicon Macs all have Metal).
+/// - **Linux/Windows**: assume CUDA may be available.
+/// - Each backend validates the actual hardware in its own `resolve_device`
+///   and falls back to CPU if the GPU probe fails.
+///
+/// This is a lightweight platform check. The actual device creation and
+/// hardware validation happens in each backend's device resolver.
+#[must_use]
+pub fn auto_detect_device() -> DeviceType {
+    if cfg!(target_os = "macos") {
+        info!("Auto-detected device: Metal (macOS)");
+        DeviceType::Metal
+    } else {
+        info!("Auto-detected device: CUDA (non-macOS, will fall back to CPU if unavailable)");
+        DeviceType::Cuda
     }
 }
 
@@ -256,9 +297,10 @@ pub struct InferenceConfig {
     #[serde(default)]
     pub backend: BackendType,
 
-    /// Device: cpu, cuda, metal
+    /// Device: auto (default), cpu, cuda, metal, gpu.
+    /// When absent from TOML, auto-detection picks the best available device.
     #[serde(default)]
-    pub device: DeviceType,
+    pub device: Option<DeviceType>,
 
     /// Maximum tokens for generation (chat/LLM)
     #[serde(default = "default_max_tokens")]
@@ -328,7 +370,7 @@ impl Default for InferenceConfig {
     fn default() -> Self {
         Self {
             backend: BackendType::default(),
-            device: DeviceType::default(),
+            device: None,
             max_tokens: default_max_tokens(),
             temperature: default_temperature(),
             top_p: default_top_p(),
@@ -399,6 +441,32 @@ pub struct ServiceConfig {
     /// Enable caching
     #[serde(default = "default_true")]
     pub enable_cache: bool,
+
+    /// Per-request timeout in milliseconds (0 = no timeout). Default: 300_000 (5 min).
+    #[serde(default = "default_request_timeout_ms")]
+    pub request_timeout_ms: u64,
+
+    /// Maximum payload size in bytes. Default: 10 MiB.
+    #[serde(default = "default_max_payload_size_bytes")]
+    pub max_payload_size_bytes: usize,
+
+    /// Seconds to drain in-flight requests during shutdown. Default: 30.
+    #[serde(default = "default_shutdown_drain_seconds")]
+    pub shutdown_drain_seconds: u64,
+
+    /// Maximum concurrent in-flight requests (0 = unlimited). Default: 64.
+    #[serde(default = "default_max_concurrent_requests")]
+    pub max_concurrent_requests: usize,
+
+    /// Path to TLS certificate PEM file. Both `tls_cert_path` and `tls_key_path`
+    /// must be set to enable TLS.
+    #[serde(default)]
+    pub tls_cert_path: Option<String>,
+
+    /// Path to TLS private key PEM file. Both `tls_cert_path` and `tls_key_path`
+    /// must be set to enable TLS.
+    #[serde(default)]
+    pub tls_key_path: Option<String>,
 }
 
 fn default_grpc_port() -> u16 {
@@ -422,6 +490,18 @@ fn default_batch_timeout_ms() -> u64 {
 fn default_cache_dir() -> String {
     "/tmp/inference-cache".to_string()
 }
+fn default_request_timeout_ms() -> u64 {
+    300_000 // 5 minutes
+}
+fn default_max_payload_size_bytes() -> usize {
+    10 * 1024 * 1024 // 10 MiB
+}
+fn default_shutdown_drain_seconds() -> u64 {
+    30
+}
+fn default_max_concurrent_requests() -> usize {
+    64
+}
 
 impl Default for ServiceConfig {
     fn default() -> Self {
@@ -434,6 +514,12 @@ impl Default for ServiceConfig {
             batch_timeout_ms: default_batch_timeout_ms(),
             cache_dir: default_cache_dir(),
             enable_cache: default_true(),
+            request_timeout_ms: default_request_timeout_ms(),
+            max_payload_size_bytes: default_max_payload_size_bytes(),
+            shutdown_drain_seconds: default_shutdown_drain_seconds(),
+            max_concurrent_requests: default_max_concurrent_requests(),
+            tls_cert_path: None,
+            tls_key_path: None,
         }
     }
 }
@@ -544,6 +630,22 @@ pub struct Config {
     pub batch_timeout_ms: u64,
     pub cache_dir: String,
     pub enable_cache: bool,
+
+    // Server hardening
+    /// Per-request timeout in milliseconds (0 = no timeout). Default: 300_000 (5 min).
+    pub request_timeout_ms: u64,
+    /// Maximum payload size in bytes. Default: 10 MiB.
+    pub max_payload_size_bytes: usize,
+    /// Seconds to drain in-flight requests during shutdown. Default: 30.
+    pub shutdown_drain_seconds: u64,
+    /// Maximum concurrent in-flight requests (0 = unlimited). Default: 64.
+    pub max_concurrent_requests: usize,
+
+    // TLS
+    /// Path to TLS certificate PEM file. Both must be set to enable TLS.
+    pub tls_cert_path: Option<String>,
+    /// Path to TLS private key PEM file. Both must be set to enable TLS.
+    pub tls_key_path: Option<String>,
 }
 
 impl Default for Config {
@@ -580,6 +682,12 @@ impl Default for Config {
             batch_timeout_ms: 100,
             cache_dir: "/tmp/inference-cache".to_string(),
             enable_cache: true,
+            request_timeout_ms: 300_000,              // 5 minutes
+            max_payload_size_bytes: 10 * 1024 * 1024, // 10 MiB
+            shutdown_drain_seconds: 30,
+            max_concurrent_requests: 64,
+            tls_cert_path: None,
+            tls_key_path: None,
         }
     }
 }
@@ -588,15 +696,31 @@ impl Config {
     /// Load configuration from environment variables and optional TOML file.
     ///
     /// Load order:
-    /// 1. Default values
-    /// 2. TOML file (if `MAIIA_AI_CONFIG_PATH` is set)
-    /// 3. Environment variables with `MAIIA_AI_` prefix
+    /// 1. Default values (hardcoded Rust defaults)
+    /// 2. Base defaults TOML (`configs/defaults.toml` sibling to the model config)
+    /// 3. Model-specific TOML file (if `MAIIA_AI_CONFIG_PATH` is set)
+    /// 4. Environment variables with `MAIIA_AI_` prefix
+    ///
+    /// The base defaults file is auto-discovered: if the model config is at
+    /// `configs/nlp/text-classification.toml`, the loader looks for
+    /// `configs/defaults.toml` (parent or grandparent directory).
+    /// This can be overridden with `MAIIA_AI_DEFAULTS_PATH`.
     pub fn load() -> crate::Result<Self> {
         let mut config = Self::default();
 
         // Try to load from TOML file first
         if let Ok(config_path) = std::env::var("MAIIA_AI_CONFIG_PATH") {
-            info!("Loading config from TOML file: {}", config_path);
+            info!("Loading config from TOML file: {config_path}");
+
+            // Auto-discover defaults.toml relative to the model config
+            let defaults_path = Self::find_defaults_path(&config_path);
+            if let Some(ref dp) = defaults_path {
+                info!("Loading base defaults from: {}", dp.display());
+                let defaults_toml = TomlConfig::from_file(dp)?;
+                config.apply_toml(&defaults_toml);
+            }
+
+            // Apply model-specific config (overrides defaults)
             let toml_config = TomlConfig::from_file(&config_path)?;
             config.apply_toml(&toml_config);
         }
@@ -604,7 +728,57 @@ impl Config {
         // Override with environment variables
         config.apply_env();
 
+        // If device is still Auto after all layers, probe for GPU
+        config.resolve_auto_device();
+
         Ok(config)
+    }
+
+    /// Find the `defaults.toml` file relative to a model config path.
+    ///
+    /// Search order:
+    /// 1. `MAIIA_AI_DEFAULTS_PATH` env var (explicit override)
+    /// 2. Same directory as the config file (e.g., `configs/nlp/defaults.toml`)
+    /// 3. Parent directory (e.g., `configs/defaults.toml` when config is `configs/nlp/foo.toml`)
+    /// 4. Grandparent directory (for deeply nested configs)
+    ///
+    /// Returns `None` if no defaults file is found (not an error — defaults are optional).
+    fn find_defaults_path(config_path: &str) -> Option<std::path::PathBuf> {
+        // Explicit override via env var
+        if let Ok(explicit) = std::env::var("MAIIA_AI_DEFAULTS_PATH") {
+            let p = std::path::PathBuf::from(&explicit);
+            if p.exists() {
+                return Some(p);
+            }
+            tracing::warn!("MAIIA_AI_DEFAULTS_PATH={explicit} does not exist, ignoring");
+        }
+
+        let config = std::path::Path::new(config_path);
+        let config_dir = config.parent()?;
+
+        // Check same directory
+        let candidate = config_dir.join("defaults.toml");
+        if candidate.exists() && candidate.as_path() != config {
+            return Some(candidate);
+        }
+
+        // Check parent directory
+        if let Some(parent) = config_dir.parent() {
+            let candidate = parent.join("defaults.toml");
+            if candidate.exists() {
+                return Some(candidate);
+            }
+
+            // Check grandparent directory
+            if let Some(grandparent) = parent.parent() {
+                let candidate = grandparent.join("defaults.toml");
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+            }
+        }
+
+        None
     }
 
     /// Load from environment only (for backwards compatibility).
@@ -631,7 +805,9 @@ impl Config {
 
         // Inference
         self.backend.clone_from(&toml.inference.backend);
-        self.device.clone_from(&toml.inference.device);
+        if let Some(ref d) = toml.inference.device {
+            self.device = d.clone();
+        }
         self.max_tokens = toml.inference.max_tokens;
         self.temperature = toml.inference.temperature;
         self.top_p = toml.inference.top_p;
@@ -667,6 +843,12 @@ impl Config {
         self.batch_timeout_ms = toml.service.batch_timeout_ms;
         self.cache_dir.clone_from(&toml.service.cache_dir);
         self.enable_cache = toml.service.enable_cache;
+        self.request_timeout_ms = toml.service.request_timeout_ms;
+        self.max_payload_size_bytes = toml.service.max_payload_size_bytes;
+        self.shutdown_drain_seconds = toml.service.shutdown_drain_seconds;
+        self.max_concurrent_requests = toml.service.max_concurrent_requests;
+        self.tls_cert_path.clone_from(&toml.service.tls_cert_path);
+        self.tls_key_path.clone_from(&toml.service.tls_key_path);
     }
 
     /// Apply environment variable overrides.
@@ -794,10 +976,105 @@ impl Config {
         if let Some(v) = get_env("ENABLE_CACHE") {
             self.enable_cache = v.to_lowercase() == "true" || v == "1";
         }
+        if let Some(v) = get_env("REQUEST_TIMEOUT_MS").and_then(|s| s.parse().ok()) {
+            self.request_timeout_ms = v;
+        }
+        if let Some(v) = get_env("MAX_PAYLOAD_SIZE_BYTES").and_then(|s| s.parse().ok()) {
+            self.max_payload_size_bytes = v;
+        }
+        if let Some(v) = get_env("SHUTDOWN_DRAIN_SECONDS").and_then(|s| s.parse().ok()) {
+            self.shutdown_drain_seconds = v;
+        }
+        if let Some(v) = get_env("MAX_CONCURRENT_REQUESTS").and_then(|s| s.parse().ok()) {
+            self.max_concurrent_requests = v;
+        }
+        if let Some(v) = get_env("TLS_CERT_PATH") {
+            self.tls_cert_path = Some(v);
+        }
+        if let Some(v) = get_env("TLS_KEY_PATH") {
+            self.tls_key_path = Some(v);
+        }
     }
 
     /// Validate the configuration.
     pub fn validate(&self) -> crate::Result<()> {
+        // === Inference parameter range checks ===
+        if self.temperature < 0.0 || self.temperature > 2.0 {
+            return Err(crate::Error::Config(format!(
+                "temperature must be in [0.0, 2.0], got {}",
+                self.temperature
+            )));
+        }
+        if self.top_p < 0.0 || self.top_p > 1.0 {
+            return Err(crate::Error::Config(format!(
+                "top_p must be in [0.0, 1.0], got {}",
+                self.top_p
+            )));
+        }
+        if self.max_tokens == 0 || self.max_tokens > 1_000_000 {
+            return Err(crate::Error::Config(format!(
+                "max_tokens must be in [1, 1_000_000], got {}",
+                self.max_tokens
+            )));
+        }
+        if self.num_threads == 0 || self.num_threads > 256 {
+            return Err(crate::Error::Config(format!(
+                "num_threads must be in [1, 256], got {}",
+                self.num_threads
+            )));
+        }
+        if self.max_cache_length == 0 {
+            return Err(crate::Error::Config(
+                "max_cache_length must be > 0".to_string(),
+            ));
+        }
+
+        // === Service parameter range checks ===
+        if self.grpc_port == 0 {
+            return Err(crate::Error::Config("grpc_port must be > 0".to_string()));
+        }
+        if self.max_batch_size == 0 {
+            return Err(crate::Error::Config(
+                "max_batch_size must be > 0".to_string(),
+            ));
+        }
+        if self.max_payload_size_bytes == 0 {
+            return Err(crate::Error::Config(
+                "max_payload_size_bytes must be > 0".to_string(),
+            ));
+        }
+
+        // === TLS validation ===
+        match (&self.tls_cert_path, &self.tls_key_path) {
+            (Some(_), None) => {
+                return Err(crate::Error::Config(
+                    "tls_cert_path is set but tls_key_path is missing — both are required for TLS"
+                        .to_string(),
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(crate::Error::Config(
+                    "tls_key_path is set but tls_cert_path is missing — both are required for TLS"
+                        .to_string(),
+                ));
+            }
+            (Some(cert), Some(key)) => {
+                let cert_path = std::path::Path::new(cert);
+                let key_path = std::path::Path::new(key);
+                if !cert_path.exists() {
+                    return Err(crate::Error::Config(format!(
+                        "tls_cert_path does not exist: {cert}"
+                    )));
+                }
+                if !key_path.exists() {
+                    return Err(crate::Error::Config(format!(
+                        "tls_key_path does not exist: {key}"
+                    )));
+                }
+            }
+            (None, None) => {} // TLS disabled, fine
+        }
+
         // Echo task doesn't need model validation
         if self.task_type.is_echo() {
             return Ok(());
@@ -840,11 +1117,135 @@ impl Config {
             format!("maiia.{}.v1", self.task_type)
         }
     }
+
+    /// Returns true if TLS is configured (both cert and key paths are set).
+    pub fn tls_enabled(&self) -> bool {
+        self.tls_cert_path.is_some() && self.tls_key_path.is_some()
+    }
+
+    /// Resolve `DeviceType::Auto` to a concrete device by probing for GPU.
+    ///
+    /// Also sets `n_gpu_layers` to 99 for Llama backend when a GPU is detected,
+    /// unless `n_gpu_layers` was explicitly set to a non-zero value.
+    fn resolve_auto_device(&mut self) {
+        if !self.device.is_auto() {
+            return;
+        }
+
+        self.device = auto_detect_device();
+
+        // For llama backend: if GPU was detected and n_gpu_layers is still 0
+        // (default = no GPU layers), offload all layers to GPU automatically.
+        if self.device != DeviceType::Cpu
+            && self.n_gpu_layers == 0
+            && matches!(self.backend, BackendType::Llama)
+        {
+            info!("Auto-setting n_gpu_layers=99 for llama backend with GPU");
+            self.n_gpu_layers = 99;
+        }
+    }
+
+    /// Build a Config from a model ID and auto-derived parameters.
+    ///
+    /// This is the "no TOML" path: given a model ID, task type, and backend hints
+    /// (all derived from HF metadata in the caller), produce a ready-to-use Config.
+    ///
+    /// The caller (CLI layer) queries the HF API and passes in the derived values.
+    /// This method applies defaults → model args → env overrides.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_model_args(
+        model_id: &str,
+        task_type: &str,
+        backend: &str,
+        onnx_file: Option<&str>,
+        gguf_file: Option<&str>,
+        device: Option<&str>,
+        max_tokens: Option<usize>,
+        temperature: Option<f32>,
+        top_p: Option<f32>,
+        num_threads: Option<usize>,
+        port: Option<u16>,
+        n_gpu_layers: Option<u32>,
+    ) -> Self {
+        let mut config = Self::default();
+
+        // Try to apply defaults.toml if discoverable from CWD
+        let defaults_candidates = ["configs/defaults.toml", "../configs/defaults.toml"];
+        for candidate in &defaults_candidates {
+            let path = std::path::Path::new(candidate);
+            if path.exists() {
+                if let Ok(defaults_toml) = TomlConfig::from_file(path) {
+                    config.apply_toml(&defaults_toml);
+                }
+                break;
+            }
+        }
+
+        // Core model settings
+        config.model_path = Some(model_id.to_string());
+        config.model_source = DataSourceType::HuggingFace;
+        config.task_type = TaskType::new(task_type);
+        config.backend = BackendType::from(backend);
+
+        if let Some(f) = onnx_file {
+            config.onnx_file = Some(f.to_string());
+        }
+        if let Some(f) = gguf_file {
+            config.gguf_file = Some(f.to_string());
+        }
+
+        // Auto-derive batching from task type
+        config.enable_batching = !config.task_type.is_seq2seq();
+
+        // Auto-derive service name
+        let task_slug = task_type.replace(' ', "-");
+        config.service_name = format!("maiia-{task_slug}-worker");
+        config.task_name = format!("maiia.{task_slug}.v1");
+
+        // Apply optional overrides
+        if let Some(d) = device {
+            config.device = DeviceType::from(d);
+        }
+        if let Some(v) = max_tokens {
+            config.max_tokens = v;
+        }
+        if let Some(v) = temperature {
+            config.temperature = v;
+        }
+        if let Some(v) = top_p {
+            config.top_p = v;
+        }
+        if let Some(v) = num_threads {
+            config.num_threads = v;
+        }
+        if let Some(v) = port {
+            config.grpc_port = v;
+        }
+        if let Some(v) = n_gpu_layers {
+            config.n_gpu_layers = v;
+        }
+
+        // Env overrides are always last
+        config.apply_env();
+
+        // If device is still Auto after all layers, probe for GPU
+        config.resolve_auto_device();
+
+        config
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Create a Config set to echo task type for validation tests.
+    fn echo_config() -> Config {
+        Config {
+            task_type: TaskType::from("echo"),
+            ..Config::default()
+        }
+    }
 
     #[test]
     fn test_default_config() {
@@ -938,5 +1339,345 @@ onnx_file = "model.onnx"
         assert_eq!(toml_config.task.r#type, TaskType::from("custom-ner-model"));
         assert_eq!(toml_config.task.name, Some("mycompany.ner.v3".to_string()));
         assert!(!toml_config.task.r#type.is_echo());
+    }
+
+    #[test]
+    fn test_validate_temperature_range() {
+        let mut config = echo_config();
+
+        config.temperature = -0.1;
+        assert!(config.validate().is_err());
+
+        config.temperature = 2.1;
+        assert!(config.validate().is_err());
+
+        config.temperature = 0.0;
+        assert!(config.validate().is_ok());
+
+        config.temperature = 2.0;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_top_p_range() {
+        let mut config = echo_config();
+
+        config.top_p = -0.1;
+        assert!(config.validate().is_err());
+
+        config.top_p = 1.1;
+        assert!(config.validate().is_err());
+
+        config.top_p = 0.0;
+        assert!(config.validate().is_ok());
+
+        config.top_p = 1.0;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_max_tokens() {
+        let mut config = echo_config();
+
+        config.max_tokens = 0;
+        assert!(config.validate().is_err());
+
+        config.max_tokens = 1_000_001;
+        assert!(config.validate().is_err());
+
+        config.max_tokens = 1;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_num_threads() {
+        let mut config = echo_config();
+
+        config.num_threads = 0;
+        assert!(config.validate().is_err());
+
+        config.num_threads = 257;
+        assert!(config.validate().is_err());
+
+        config.num_threads = 1;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_default_hardening_values() {
+        let config = Config::default();
+        assert_eq!(config.request_timeout_ms, 300_000);
+        assert_eq!(config.max_payload_size_bytes, 10 * 1024 * 1024);
+        assert_eq!(config.shutdown_drain_seconds, 30);
+        assert_eq!(config.max_concurrent_requests, 64);
+    }
+
+    #[test]
+    fn test_toml_parse_hardening_config() {
+        let toml_str = r#"
+[task]
+type = "echo"
+
+[service]
+request_timeout_ms = 60000
+max_payload_size_bytes = 5242880
+shutdown_drain_seconds = 10
+max_concurrent_requests = 128
+"#;
+
+        let toml_config: TomlConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(toml_config.service.request_timeout_ms, 60000);
+        assert_eq!(toml_config.service.max_payload_size_bytes, 5_242_880);
+        assert_eq!(toml_config.service.shutdown_drain_seconds, 10);
+        assert_eq!(toml_config.service.max_concurrent_requests, 128);
+    }
+
+    #[test]
+    fn test_tls_defaults_disabled() {
+        let config = Config::default();
+        assert!(config.tls_cert_path.is_none());
+        assert!(config.tls_key_path.is_none());
+        assert!(!config.tls_enabled());
+    }
+
+    #[test]
+    fn test_tls_validation_cert_without_key() {
+        let mut config = echo_config();
+        config.tls_cert_path = Some("/tmp/cert.pem".to_string());
+        config.tls_key_path = None;
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("tls_key_path is missing"), "got: {err}");
+    }
+
+    #[test]
+    fn test_tls_validation_key_without_cert() {
+        let mut config = echo_config();
+        config.tls_cert_path = None;
+        config.tls_key_path = Some("/tmp/key.pem".to_string());
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("tls_cert_path is missing"), "got: {err}");
+    }
+
+    #[test]
+    fn test_tls_validation_nonexistent_files() {
+        let mut config = echo_config();
+        config.tls_cert_path = Some("/nonexistent/cert.pem".to_string());
+        config.tls_key_path = Some("/nonexistent/key.pem".to_string());
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("does not exist"), "got: {err}");
+    }
+
+    #[test]
+    fn test_tls_toml_parse() {
+        let toml_str = r#"
+[task]
+type = "echo"
+
+[service]
+tls_cert_path = "/etc/tls/server.crt"
+tls_key_path = "/etc/tls/server.key"
+"#;
+
+        let toml_config: TomlConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            toml_config.service.tls_cert_path,
+            Some("/etc/tls/server.crt".to_string())
+        );
+        assert_eq!(
+            toml_config.service.tls_key_path,
+            Some("/etc/tls/server.key".to_string())
+        );
+
+        // Verify apply_toml propagates to Config
+        let mut config = Config::default();
+        config.apply_toml(&toml_config);
+        assert!(config.tls_enabled());
+    }
+
+    /// Validates that ALL config files in configs/ parse correctly and pass validation.
+    ///
+    /// This test mirrors the real `Config::load()` behavior: for each model config,
+    /// it first applies `configs/defaults.toml` (if present), then the model config,
+    /// then validates. This ensures the layered config system works end-to-end.
+    #[test]
+    fn test_all_config_files_parse_and_validate() {
+        // Recursively find all .toml files
+        fn collect_toml_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        collect_toml_files(&path, out);
+                    } else if path.extension().is_some_and(|ext| ext == "toml") {
+                        out.push(path);
+                    }
+                }
+            }
+        }
+
+        // Walk up from the crate root to find the workspace configs/ directory.
+        // The crate is at crates/inference-core/, so workspace root is ../../
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace_root = manifest_dir
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("could not find workspace root");
+        let configs_dir = workspace_root.join("configs");
+
+        assert!(
+            configs_dir.is_dir(),
+            "configs/ directory not found at {}",
+            configs_dir.display()
+        );
+
+        // Load base defaults if present
+        let defaults_path = configs_dir.join("defaults.toml");
+        let defaults_toml = if defaults_path.exists() {
+            Some(TomlConfig::from_file(&defaults_path).expect("defaults.toml should parse"))
+        } else {
+            None
+        };
+
+        let mut toml_files = Vec::new();
+        collect_toml_files(&configs_dir, &mut toml_files);
+        toml_files.sort();
+
+        assert!(
+            !toml_files.is_empty(),
+            "no .toml files found in {}",
+            configs_dir.display()
+        );
+
+        let mut count = 0;
+        let mut errors = Vec::new();
+
+        for path in &toml_files {
+            // Skip defaults.toml itself — it's not a model config
+            if path.file_name().is_some_and(|f| f == "defaults.toml") {
+                continue;
+            }
+
+            count += 1;
+            let relative = path
+                .strip_prefix(workspace_root)
+                .unwrap_or(path)
+                .display()
+                .to_string();
+
+            // Step 1: Parse as TomlConfig
+            let toml_config = match TomlConfig::from_file(path) {
+                Ok(tc) => tc,
+                Err(e) => {
+                    errors.push(format!("{relative}: TOML parse error: {e}"));
+                    continue;
+                }
+            };
+
+            // Step 2: Apply defaults first, then model config (mirrors Config::load())
+            let mut config = Config::default();
+            if let Some(ref defaults) = defaults_toml {
+                config.apply_toml(defaults);
+            }
+            config.apply_toml(&toml_config);
+
+            if let Err(e) = config.validate() {
+                errors.push(format!("{relative}: validation error: {e}"));
+            }
+        }
+
+        assert!(
+            errors.is_empty(),
+            "{} of {count} config files failed:\n  - {}",
+            errors.len(),
+            errors.join("\n  - ")
+        );
+
+        // Sanity check: we found a reasonable number of configs
+        assert!(
+            count >= 30,
+            "expected at least 30 config files, found {count}"
+        );
+    }
+
+    #[test]
+    fn test_defaults_layering() {
+        // Simulate: defaults set device=cpu, num_threads=4, grpc_port=50051
+        // Model config overrides only task + model + service.name
+        let defaults_str = r#"
+[model]
+source = "huggingface"
+
+[inference]
+device = "cpu"
+num_threads = 4
+
+[service]
+grpc_port = 50051
+health_port = 8080
+enable_batching = true
+max_batch_size = 32
+batch_timeout_ms = 100
+"#;
+
+        let model_str = r#"
+[task]
+type = "feature-extraction"
+name = "maiia.feature-extraction.v1"
+
+[model]
+path = "Xenova/all-MiniLM-L6-v2"
+onnx_file = "onnx/model.onnx"
+
+[service]
+name = "maiia-feature-extraction-worker"
+max_batch_size = 64
+batch_timeout_ms = 50
+"#;
+
+        let defaults_toml: TomlConfig = toml::from_str(defaults_str).unwrap();
+        let model_toml: TomlConfig = toml::from_str(model_str).unwrap();
+
+        let mut config = Config::default();
+        config.apply_toml(&defaults_toml);
+        config.apply_toml(&model_toml);
+
+        // From defaults
+        assert_eq!(config.device, DeviceType::Cpu);
+        assert_eq!(config.num_threads, 4);
+        assert_eq!(config.grpc_port, 50051);
+        assert!(config.enable_batching);
+
+        // From model config (overrides defaults)
+        assert_eq!(config.task_type, TaskType::from("feature-extraction"));
+        assert_eq!(
+            config.model_path,
+            Some("Xenova/all-MiniLM-L6-v2".to_string())
+        );
+        assert_eq!(config.onnx_file, Some("onnx/model.onnx".to_string()));
+        assert_eq!(config.service_name, "maiia-feature-extraction-worker");
+        assert_eq!(config.max_batch_size, 64);
+        assert_eq!(config.batch_timeout_ms, 50);
+    }
+
+    #[test]
+    fn test_find_defaults_path() {
+        // Test with a path that has configs/defaults.toml as parent
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace_root = manifest_dir
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("workspace root");
+        let configs_dir = workspace_root.join("configs");
+
+        if configs_dir.join("defaults.toml").exists() {
+            // A config in configs/nlp/ should find configs/defaults.toml
+            let fake_config = configs_dir.join("nlp").join("some-model.toml");
+            let result = Config::find_defaults_path(fake_config.to_str().unwrap());
+            assert!(result.is_some(), "should find defaults.toml");
+            assert!(
+                result.unwrap().ends_with("defaults.toml"),
+                "should point to defaults.toml"
+            );
+        }
     }
 }

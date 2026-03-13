@@ -22,7 +22,7 @@ repository = "https://github.com/Linzell/ai-deploy"
 
 # Lint configuration for the workspace
 [workspace.lints.rust]
-unsafe_code = "warn"
+unsafe_code = "deny"
 
 [workspace.lints.clippy]
 # Enable useful pedantic lints
@@ -53,7 +53,7 @@ async-trait = "0.1"
 # Serialization & Config
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-toml = "0.8"
+toml = "1.0"
 
 # Error handling
 thiserror = "2.0"
@@ -61,13 +61,14 @@ anyhow = "1.0"
 
 # Logging
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # gRPC
-tonic = "0.12"
-tonic-reflection = "0.12"
-prost = "0.13"
-tonic-build = "0.12"
+tonic = "0.14"
+tonic-reflection = "0.14"
+prost = "0.14"
+tonic-prost = "0.14"
+tonic-prost-build = "0.14"
 
 # HuggingFace
 hf-hub = { version = "0.5", features = ["tokio"] }

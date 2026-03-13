@@ -37,18 +37,9 @@ type = "text-classification"
 name = "maiia.bge-reranker-large.v1"
 
 [model]
-source = "huggingface"
 path = "corto-ai/bge-reranker-large-onnx"
 onnx_file = "model.onnx"
 
-[inference]
-device = "cpu"
-num_threads = 4
-
 [service]
-grpc_port = 50051
-health_port = 8080
 name = "maiia-bge-reranker-large-worker"
-enable_batching = true
-max_batch_size = 32
 batch_timeout_ms = 50

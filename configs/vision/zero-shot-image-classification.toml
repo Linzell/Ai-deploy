@@ -11,8 +11,8 @@
 # 
 # Classifies images into arbitrary categories using vision-language models.
 # Uses CLIP dual-encoder architecture:
-#   - Vision encoder: processes images → image embeddings
-#   - Text encoder: processes candidate labels → text embeddings
+#   - Vision encoder: processes images -> image embeddings
+#   - Text encoder: processes candidate labels -> text embeddings
 #   - Classification via cosine similarity + softmax
 #
 # ONNX models on HuggingFace (require vision_model.onnx + text_model.onnx):
@@ -32,18 +32,9 @@ type = "zero-shot-image-classification"
 name = "maiia.zero-shot-image-classification.v1"
 
 [model]
-source = "huggingface"
 path = "Xenova/clip-vit-base-patch32"
 # Note: ClipTask automatically downloads vision_model.onnx and text_model.onnx
 
-[inference]
-device = "cpu"
-num_threads = 4
-
 [service]
-grpc_port = 50051
-health_port = 8080
 name = "maiia-zero-shot-image-worker"
-enable_batching = true
 max_batch_size = 16
-batch_timeout_ms = 100

@@ -42,20 +42,11 @@ type = "feature-extraction"
 name = "maiia.bge-m3.v1"
 
 [model]
-source = "huggingface"
 path = "Xenova/bge-m3"
 # Using INT8 quantized model - smaller (568MB vs 2.2GB) and self-contained (no external data)
 # For full precision, use "onnx/model.onnx" (requires downloading 2.2GB external data file)
 onnx_file = "onnx/model_int8.onnx"
 
-[inference]
-device = "cpu"
-num_threads = 4
-
 [service]
-grpc_port = 50051
-health_port = 8080
 name = "maiia-bge-m3-worker"
-enable_batching = true
-max_batch_size = 16          # Smaller batch due to larger model
-batch_timeout_ms = 100
+max_batch_size = 16                       # Smaller batch due to larger model

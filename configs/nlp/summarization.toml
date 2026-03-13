@@ -4,39 +4,27 @@
 # Test with raw text (service handles tokenization):
 #   grpcurl -plaintext -d '{"task_name":"maiia.summarization.v1","payload":"{\"text\":\"Artificial intelligence is transforming the way we live and work. Machine learning models can understand language and generate content.\"}","request_id":"1"}' \
 #     127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
-# 
+#
 # Generates concise summaries of longer texts.
-# Popular models: facebook/bart-large-cnn, t5-small, Falconsai/text_summarization
 #
-# ONNX models on HuggingFace:
-#   - Xenova/distilbart-cnn-6-6
-#   - optimum/t5-small
-#   - Xenova/bart-large-cnn
-#
-# Input format (from LangChain - service handles tokenization):
+# Input format:
 #   {"text": "Long article text to summarize..."}
 #
 # Output format:
-#   {"outputs": {"logits": [[[...]]]}}  # Decoder outputs
+#   {"outputs": {"logits": [[[...]]]}}
 
 [task]
 type = "summarization"
 name = "maiia.summarization.v1"
 
 [model]
-source = "huggingface"
 path = "Xenova/distilbart-cnn-6-6"
-onnx_file = "onnx/encoder_model.onnx"    # Encoder-decoder models have multiple files
+onnx_file = "onnx/encoder_model.onnx"
 
 [inference]
-device = "cpu"
 max_tokens = 1024
-num_threads = 4
 
 [service]
-grpc_port = 50051
-health_port = 8080
 name = "maiia-summarization-worker"
-enable_batching = true
 max_batch_size = 8
 batch_timeout_ms = 200

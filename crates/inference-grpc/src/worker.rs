@@ -7,18 +7,22 @@
 //! Uses gRPC status codes for transport-level errors:
 //! - `NOT_FOUND` - Unknown task name (client error)
 //! - `INVALID_ARGUMENT` - Invalid request format (client error)
+//! - `RESOURCE_EXHAUSTED` - Payload too large (client error)
+//! - `DEADLINE_EXCEEDED` - Request timed out (server-side timeout)
 //! - `INTERNAL` - Server-side errors during task execution
 //!
 //! Task execution errors are returned in the TaskResponse with `success=false`,
 //! allowing clients to distinguish between transport errors and task failures.
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status};
-use tracing::{error, info, instrument};
+use tracing::{error, info, instrument, warn};
+use uuid::Uuid;
 
+use crate::batcher::BatchHandle;
 use crate::generated::worker_pb::{
     worker_service_server::WorkerService, TaskChunk as ProtoTaskChunk, TaskRequest, TaskResponse,
 };
@@ -27,12 +31,71 @@ use crate::task::Task;
 /// WorkerService implementation that routes requests to a Task.
 pub struct WorkerServiceImpl {
     task: Arc<dyn Task>,
+    /// Per-request timeout (0 = no timeout).
+    request_timeout: Duration,
+    /// Maximum payload size in bytes.
+    max_payload_size: usize,
+    /// Optional batch handle — present when batching is enabled and the task supports it.
+    batch_handle: Option<BatchHandle>,
 }
 
 impl WorkerServiceImpl {
-    /// Create a new WorkerService with the given task.
-    pub fn new(task: Arc<dyn Task>) -> Self {
-        Self { task }
+    /// Create a new WorkerService with the given task and limits.
+    pub fn new(
+        task: Arc<dyn Task>,
+        request_timeout_ms: u64,
+        max_payload_size_bytes: usize,
+    ) -> Self {
+        Self {
+            task,
+            request_timeout: Duration::from_millis(request_timeout_ms),
+            max_payload_size: max_payload_size_bytes,
+            batch_handle: None,
+        }
+    }
+
+    /// Attach a batch handle for dynamic batching.
+    ///
+    /// When set, `execute_task` will route requests through the batcher
+    /// instead of calling `task.execute()` directly.
+    #[must_use]
+    pub fn with_batch_handle(mut self, handle: BatchHandle) -> Self {
+        self.batch_handle = Some(handle);
+        self
+    }
+
+    /// Validate the incoming request payload and parameters.
+    #[allow(clippy::result_large_err)] // Status is inherently large in tonic
+    fn validate_request(&self, req: &TaskRequest) -> Result<(), Status> {
+        // Check payload size
+        let payload_len = req.payload.len();
+        if payload_len > self.max_payload_size {
+            return Err(Status::resource_exhausted(format!(
+                "Payload size {} bytes exceeds maximum {} bytes",
+                payload_len, self.max_payload_size
+            )));
+        }
+
+        // Check task_name is not empty
+        if req.task_name.is_empty() {
+            return Err(Status::invalid_argument("task_name must not be empty"));
+        }
+
+        // Check task_name length (prevent abuse)
+        if req.task_name.len() > 256 {
+            return Err(Status::invalid_argument(
+                "task_name must be at most 256 characters",
+            ));
+        }
+
+        // Check metadata map size (prevent abuse)
+        if req.metadata.len() > 64 {
+            return Err(Status::invalid_argument(
+                "metadata map must have at most 64 entries",
+            ));
+        }
+
+        Ok(())
     }
 }
 
@@ -46,15 +109,18 @@ impl WorkerService for WorkerServiceImpl {
         let start = Instant::now();
         let req = request.into_inner();
 
+        // --- Input validation ---
+        self.validate_request(&req)?;
+
         let task_name = &req.task_name;
         let request_id = if req.request_id.is_empty() {
-            "unknown"
+            Uuid::new_v4().to_string()
         } else {
-            &req.request_id
+            req.request_id.clone()
         };
 
         tracing::Span::current().record("task_name", task_name);
-        tracing::Span::current().record("request_id", request_id);
+        tracing::Span::current().record("request_id", &request_id);
 
         info!("[{}] ExecuteTask received: {}", request_id, task_name);
 
@@ -69,8 +135,45 @@ impl WorkerService for WorkerServiceImpl {
             return Err(Status::not_found(error_msg));
         }
 
-        // Execute task
-        let result = self.task.execute(&req.payload, request_id).await;
+        // --- Execute task with optional timeout ---
+        // Route through batcher if available, otherwise call task.execute() directly.
+        let task_future = if let Some(ref batch_handle) = self.batch_handle {
+            let bh = batch_handle.clone();
+            let payload = req.payload.clone();
+            let rid = request_id.clone();
+            Box::pin(async move {
+                bh.submit(payload, rid).await.unwrap_or_else(|| {
+                    inference_core::task::TaskResult::err("Batch scheduler unavailable".to_string())
+                })
+            })
+                as std::pin::Pin<
+                    Box<dyn std::future::Future<Output = inference_core::task::TaskResult> + Send>,
+                >
+        } else {
+            let task = Arc::clone(&self.task);
+            let payload = req.payload.clone();
+            let rid = request_id.clone();
+            Box::pin(async move { task.execute(&payload, &rid).await })
+                as std::pin::Pin<
+                    Box<dyn std::future::Future<Output = inference_core::task::TaskResult> + Send>,
+                >
+        };
+
+        let result = if self.request_timeout.is_zero() {
+            task_future.await
+        } else {
+            match tokio::time::timeout(self.request_timeout, task_future).await {
+                Ok(result) => result,
+                Err(_elapsed) => {
+                    let timeout_ms = self.request_timeout.as_millis();
+                    warn!("[{}] Request timed out after {}ms", request_id, timeout_ms);
+                    return Err(Status::deadline_exceeded(format!(
+                        "Request timed out after {timeout_ms}ms"
+                    )));
+                }
+            }
+        };
+
         #[allow(clippy::cast_possible_truncation)]
         let duration_ms = start.elapsed().as_millis() as i64;
 
@@ -103,9 +206,12 @@ impl WorkerService for WorkerServiceImpl {
         let start = Instant::now();
         let req = request.into_inner();
 
+        // --- Input validation ---
+        self.validate_request(&req)?;
+
         let task_name = &req.task_name;
         let request_id = if req.request_id.is_empty() {
-            "unknown".to_string()
+            Uuid::new_v4().to_string()
         } else {
             req.request_id.clone()
         };

@@ -36,17 +36,13 @@ type = "text-to-speech"
 name = "maiia.tts.v1"
 
 [model]
-source = "huggingface"
 path = "parler-tts/parler-tts-mini-v1" # Parler TTS Mini (recommended)
 
 [inference]
-backend = "candle" # Use Candle backend for TTS
+backend = "candle"                        # Use Candle backend for TTS
 device = "gpu"
-num_threads = 4
-max_tokens = 2048 # Max generation steps
+max_tokens = 2048                         # Max generation steps
 
 [service]
-grpc_port = 50051
-health_port = 8080
 name = "maiia-tts-worker"
-enable_batching = false # TTS typically one request at a time
+enable_batching = false                   # TTS typically one request at a time
