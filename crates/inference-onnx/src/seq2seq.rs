@@ -35,7 +35,7 @@ use crate::error::{TaskError, TaskResult};
 use crate::session::load_session_for_seq2seq;
 use crate::tensor_utils::{json_to_array2_i64, json_to_array_f32};
 use async_trait::async_trait;
-use inference_core::generation::{GenerationConfig, ModelArchitecture};
+use inference_core::generation::{GenerationConfig, KvCacheConfig, ModelArchitecture};
 use inference_core::task::{Task, TaskResult as GrpcTaskResult};
 use inference_core::Config;
 use ndarray::{Array2, Array3, Array4, ArrayD};
@@ -47,7 +47,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 #[cfg(feature = "preprocess")]
 use inference_preprocess::Preprocessor;
@@ -104,6 +104,9 @@ pub struct Seq2SeqTask {
     decoder_uses_embeds: bool,
     /// Generation configuration
     gen_config: GenerationConfig,
+    /// KV cache configuration (max length, dtype warnings, etc.)
+    #[allow(dead_code)]
+    kv_cache: KvCacheConfig,
     /// Preprocessor for input tokenization
     #[cfg(feature = "preprocess")]
     preprocessor: Arc<Preprocessor>,
@@ -184,6 +187,75 @@ impl Seq2SeqTask {
         kv_cache_inputs
     }
 
+    /// Read `max_position_embeddings` (or `n_positions`, `n_ctx`) from a model's
+    /// `config.json`.  Returns `None` if the file doesn't exist or the field
+    /// is absent — the caller falls back to a hardcoded default.
+    fn read_model_max_positions(model_dir: &Path) -> Option<usize> {
+        let config_path = model_dir.join("config.json");
+        let data = std::fs::read_to_string(&config_path).ok()?;
+        let json: serde_json::Value = serde_json::from_str(&data).ok()?;
+
+        // Try the common field names in priority order
+        for key in &["max_position_embeddings", "n_positions", "n_ctx"] {
+            if let Some(v) = json.get(key).and_then(serde_json::Value::as_u64) {
+                if let Ok(val) = usize::try_from(v) {
+                    debug!(
+                        key = key,
+                        value = val,
+                        "Read max position embeddings from model config.json"
+                    );
+                    return Some(val);
+                }
+            }
+        }
+
+        // Also check inside text_config (e.g. Florence-2, multimodal models)
+        if let Some(text_cfg) = json.get("text_config") {
+            for key in &["max_position_embeddings", "n_positions"] {
+                if let Some(v) = text_cfg.get(key).and_then(serde_json::Value::as_u64) {
+                    if let Ok(val) = usize::try_from(v) {
+                        debug!(
+                            key = key,
+                            value = val,
+                            "Read max position embeddings from model config.json (text_config)"
+                        );
+                        return Some(val);
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Log a warning if the user configured KV cache dtypes that the ONNX
+    /// backend cannot honour (ONNX Runtime only supports f32 cache tensors).
+    fn warn_unsupported_cache_dtype(kv_cache: &KvCacheConfig) {
+        use inference_core::CacheDType;
+
+        if let Some(dtype) = kv_cache.cache_dtype_k {
+            if dtype != CacheDType::F32 {
+                warn!(
+                    dtype = %dtype,
+                    "ONNX backend does not support KV cache quantization for K cache; \
+                     ignoring cache_dtype_k={dtype} (only F32 is supported)"
+                );
+            }
+        }
+        if let Some(dtype) = kv_cache.cache_dtype_v {
+            if dtype != CacheDType::F32 {
+                warn!(
+                    dtype = %dtype,
+                    "ONNX backend does not support KV cache quantization for V cache; \
+                     ignoring cache_dtype_v={dtype} (only F32 is supported)"
+                );
+            }
+        }
+        if kv_cache.flash_attention {
+            warn!("ONNX backend does not support flash attention; ignoring flash_attention=true");
+        }
+    }
+
     /// Create a decoder-only task (GPT2, Llama, etc.).
     #[cfg(feature = "preprocess")]
     pub fn decoder_only(
@@ -191,6 +263,7 @@ impl Seq2SeqTask {
         name: impl Into<String>,
         config: &Config,
         preprocessor: Arc<Preprocessor>,
+        model_dir: Option<&Path>,
     ) -> TaskResult<Self> {
         let decoder_path = decoder_path.as_ref();
         info!(path = %decoder_path.display(), "Loading decoder-only model");
@@ -215,11 +288,26 @@ impl Seq2SeqTask {
         // Extract KV-cache metadata from model inputs
         let kv_cache_inputs = Self::extract_kv_cache_info(&decoder);
 
+        let kv_cache = KvCacheConfig::from_config(config);
+        Self::warn_unsupported_cache_dtype(&kv_cache);
+
+        // Determine max_position_embeddings:
+        // 1. Try model's config.json
+        // 2. Fall back to hardcoded 2048 for decoder-only models
+        // 3. Apply kv_cache.max_length as a ceiling
+        let model_max_positions = model_dir
+            .and_then(Self::read_model_max_positions)
+            .unwrap_or(2048);
+        let max_position_embeddings = model_max_positions.min(kv_cache.max_length);
+
         info!(
             inputs = ?decoder_input_names,
             outputs = ?decoder_output_names,
             has_kv_cache = has_kv_cache,
             num_kv_cache_inputs = kv_cache_inputs.len(),
+            model_max_positions = model_max_positions,
+            max_position_embeddings = max_position_embeddings,
+            kv_cache_max_length = kv_cache.max_length,
             "Decoder model loaded"
         );
 
@@ -231,13 +319,13 @@ impl Seq2SeqTask {
             embed_tokens: None,
             decoder_uses_embeds: false,
             gen_config: GenerationConfig::from_config(config),
+            kv_cache,
             preprocessor,
             has_kv_cache,
             decoder_input_names,
             decoder_output_names,
             kv_cache_inputs,
-            // Decoder-only models typically support longer contexts
-            max_position_embeddings: 2048,
+            max_position_embeddings,
         })
     }
 
@@ -250,6 +338,7 @@ impl Seq2SeqTask {
         name: impl Into<String>,
         config: &Config,
         preprocessor: Arc<Preprocessor>,
+        model_dir: Option<&Path>,
     ) -> TaskResult<Self> {
         Self::encoder_decoder_with_embed(
             encoder_path,
@@ -258,6 +347,7 @@ impl Seq2SeqTask {
             name,
             config,
             preprocessor,
+            model_dir,
         )
     }
 
@@ -275,6 +365,7 @@ impl Seq2SeqTask {
         name: impl Into<String>,
         config: &Config,
         preprocessor: Arc<Preprocessor>,
+        model_dir: Option<&Path>,
     ) -> TaskResult<Self> {
         let encoder_path = encoder_path.as_ref();
         let decoder_path = decoder_path.as_ref();
@@ -323,16 +414,6 @@ impl Seq2SeqTask {
         // Check if decoder uses inputs_embeds (Florence-2 style)
         let decoder_uses_embeds = decoder_input_names.contains(&"inputs_embeds".to_string());
 
-        info!(
-            encoder_inputs = ?encoder_inputs,
-            encoder_outputs = ?encoder_outputs,
-            decoder_inputs = ?decoder_input_names,
-            decoder_outputs = ?decoder_output_names,
-            decoder_uses_embeds = decoder_uses_embeds,
-            has_embed_tokens = embed_tokens.is_some(),
-            "Encoder-decoder model loaded"
-        );
-
         let has_kv_cache = decoder_input_names
             .iter()
             .any(|n| n.contains("past_key_values"));
@@ -340,7 +421,14 @@ impl Seq2SeqTask {
         // Extract KV-cache metadata from model inputs
         let kv_cache_inputs = Self::extract_kv_cache_info(&decoder);
 
-        // Determine max position embeddings based on model type
+        let kv_cache = KvCacheConfig::from_config(config);
+        Self::warn_unsupported_cache_dtype(&kv_cache);
+
+        // Determine max position embeddings:
+        // 1. Try model's config.json (most accurate)
+        // 2. Fall back to architecture-specific defaults
+        // 3. Apply kv_cache.max_length as a ceiling
+        //
         // Florence-2 style models (with embed_tokens) have max 1024 positions in config,
         // but the model uses an offset of 2 in Florence2LearnedPositionalEmbedding:
         //   positions = torch.arange(past_key_values_length, past_key_values_length + seq_len)
@@ -348,14 +436,24 @@ impl Seq2SeqTask {
         // So max valid position index is (max_position_embeddings - 1) = 1023, which maps to
         // embedding index 1023 + 2 = 1025, which is valid in the 1026-size embedding table.
         // If we try position 1024, it becomes 1024 + 2 = 1026, which is out of bounds!
-        let max_position_embeddings = if decoder_uses_embeds {
-            // Florence-2 style: limited to 1024 positions (0-1023)
-            // This is the actual config value from the ONNX community model
-            1024
-        } else {
-            // Standard encoder-decoder (T5, BART, Whisper): typically 512-2048
-            2048
-        };
+        let model_default = if decoder_uses_embeds { 1024 } else { 2048 };
+        let model_max_positions = model_dir
+            .and_then(Self::read_model_max_positions)
+            .unwrap_or(model_default);
+        let max_position_embeddings = model_max_positions.min(kv_cache.max_length);
+
+        info!(
+            encoder_inputs = ?encoder_inputs,
+            encoder_outputs = ?encoder_outputs,
+            decoder_inputs = ?decoder_input_names,
+            decoder_outputs = ?decoder_output_names,
+            decoder_uses_embeds = decoder_uses_embeds,
+            has_embed_tokens = embed_tokens.is_some(),
+            model_max_positions = model_max_positions,
+            max_position_embeddings = max_position_embeddings,
+            kv_cache_max_length = kv_cache.max_length,
+            "Encoder-decoder model loaded"
+        );
 
         Ok(Self {
             name: name.into(),
@@ -365,6 +463,7 @@ impl Seq2SeqTask {
             embed_tokens,
             decoder_uses_embeds,
             gen_config: GenerationConfig::from_config(config),
+            kv_cache,
             preprocessor,
             has_kv_cache,
             decoder_input_names,
@@ -413,8 +512,11 @@ impl Seq2SeqTask {
                 name,
                 config,
                 preprocessor,
+                Some(model_dir),
             ),
-            (None, Some(dec)) => Self::decoder_only(dec, name, config, preprocessor),
+            (None, Some(dec)) => {
+                Self::decoder_only(dec, name, config, preprocessor, Some(model_dir))
+            }
             (Some(_), None) => Err(TaskError::ModelNotFound(
                 "Found encoder but no decoder model".to_string(),
             )),

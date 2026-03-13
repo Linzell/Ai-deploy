@@ -10,6 +10,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use tracing::info;
 
+use crate::generation::{CacheDType, KvCacheConfig};
+
 /// Environment variable prefix for all settings.
 pub const ENV_PREFIX: &str = "MAIIA_AI_";
 
@@ -286,6 +288,21 @@ pub struct InferenceConfig {
     #[serde(default)]
     pub n_gpu_layers: u32,
 
+    /// KV cache configuration for attention cache management.
+    ///
+    /// Controls cache dtype quantization, max length, flash attention,
+    /// and GPU offloading. See [`KvCacheConfig`] for details.
+    ///
+    /// ```toml
+    /// [inference.kv_cache]
+    /// cache_dtype_k = "q8_0"
+    /// cache_dtype_v = "q8_0"
+    /// max_length = 4096
+    /// flash_attention = true
+    /// ```
+    #[serde(default)]
+    pub kv_cache: KvCacheConfig,
+
     /// Extra model-specific parameters
     #[serde(default, flatten)]
     pub extra: HashMap<String, toml::Value>,
@@ -318,6 +335,7 @@ impl Default for InferenceConfig {
             num_threads: default_num_threads(),
             max_cache_length: default_max_cache_length(),
             n_gpu_layers: 0,
+            kv_cache: KvCacheConfig::default(),
             extra: HashMap::new(),
         }
     }
@@ -503,6 +521,9 @@ pub struct Config {
     pub max_cache_length: usize,
     pub n_gpu_layers: u32,
 
+    // KV Cache Configuration
+    pub kv_cache: KvCacheConfig,
+
     // HuggingFace Configuration
     pub hf_token: Option<String>,
     pub hf_cache_dir: Option<String>,
@@ -543,6 +564,7 @@ impl Default for Config {
             num_threads: 4,
             max_cache_length: 2048,
             n_gpu_layers: 0,
+            kv_cache: KvCacheConfig::default(),
             hf_token: None,
             hf_cache_dir: None,
             s3_bucket: None,
@@ -617,6 +639,14 @@ impl Config {
         self.max_cache_length = toml.inference.max_cache_length;
         self.n_gpu_layers = toml.inference.n_gpu_layers;
 
+        // KV Cache — use the nested [inference.kv_cache] section.
+        // For backward compatibility: if kv_cache.max_length is still the default (2048)
+        // but max_cache_length was explicitly set to something else, use max_cache_length.
+        self.kv_cache = toml.inference.kv_cache.clone();
+        if self.kv_cache.max_length == 2048 && toml.inference.max_cache_length != 2048 {
+            self.kv_cache.max_length = toml.inference.max_cache_length;
+        }
+
         // HuggingFace
         self.hf_token.clone_from(&toml.huggingface.token);
         self.hf_cache_dir.clone_from(&toml.huggingface.cache_dir);
@@ -690,9 +720,28 @@ impl Config {
         }
         if let Some(v) = get_env("MAX_CACHE_LENGTH").and_then(|s| s.parse().ok()) {
             self.max_cache_length = v;
+            // Also update kv_cache.max_length for backward compatibility
+            self.kv_cache.max_length = v;
         }
         if let Some(v) = get_env("N_GPU_LAYERS").and_then(|s| s.parse().ok()) {
             self.n_gpu_layers = v;
+        }
+
+        // KV Cache specific env vars (override TOML [inference.kv_cache] section)
+        if let Some(v) = get_env("KV_CACHE_DTYPE_K").and_then(|s| CacheDType::from_str_opt(&s)) {
+            self.kv_cache.cache_dtype_k = Some(v);
+        }
+        if let Some(v) = get_env("KV_CACHE_DTYPE_V").and_then(|s| CacheDType::from_str_opt(&s)) {
+            self.kv_cache.cache_dtype_v = Some(v);
+        }
+        if let Some(v) = get_env("KV_CACHE_MAX_LENGTH").and_then(|s| s.parse().ok()) {
+            self.kv_cache.max_length = v;
+        }
+        if let Some(v) = get_env("KV_CACHE_FLASH_ATTENTION") {
+            self.kv_cache.flash_attention = v.to_lowercase() == "true" || v == "1";
+        }
+        if let Some(v) = get_env("KV_CACHE_OFFLOAD_TO_GPU") {
+            self.kv_cache.offload_to_gpu = v.to_lowercase() == "true" || v == "1";
         }
 
         // HuggingFace (also check HF_TOKEN without prefix for compatibility)

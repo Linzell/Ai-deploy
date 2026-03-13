@@ -33,7 +33,7 @@ use async_trait::async_trait;
 use base64::Engine;
 use candle_core::{DType, Device, IndexOp, Tensor};
 use inference_core::task::{Task, TaskChunk, TaskResult as GrpcTaskResult, TaskStream};
-use inference_core::Config as AppConfig;
+use inference_core::{Config as AppConfig, KvCacheConfig};
 use rand::distributions::weighted::WeightedIndex;
 use rand::distributions::Distribution;
 use rand::SeedableRng;
@@ -224,6 +224,8 @@ pub struct Seq2SeqGenConfig {
     pub repetition_penalty: f32,
     /// Random seed.
     pub seed: u64,
+    /// KV cache configuration (max length, dtype preferences, etc.)
+    pub kv_cache: KvCacheConfig,
 }
 
 impl Default for Seq2SeqGenConfig {
@@ -234,6 +236,7 @@ impl Default for Seq2SeqGenConfig {
             top_p: 0.9,
             repetition_penalty: 1.0,
             seed: 299_792_458,
+            kv_cache: KvCacheConfig::default(),
         }
     }
 }
@@ -245,6 +248,7 @@ impl Seq2SeqGenConfig {
             max_new_tokens: config.max_tokens,
             temperature: f64::from(config.temperature),
             top_p: f64::from(config.top_p),
+            kv_cache: KvCacheConfig::from_config(config),
             ..Default::default()
         }
     }
@@ -333,6 +337,7 @@ pub struct CandleSeq2SeqTask {
     tokenizer: Seq2SeqTokenizer,
     arch: Seq2SeqArch,
     device: Device,
+    dtype: DType,
     gen_config: Seq2SeqGenConfig,
 }
 
@@ -366,8 +371,13 @@ impl CandleSeq2SeqTask {
         let arch = Seq2SeqArch::detect_from_config(&config_path)?;
         info!(architecture = ?arch, "Detected architecture");
 
-        // Determine dtype
-        let dtype = DType::F32; // F32 for stability
+        // Build generation config first — we need kv_cache settings to pick dtype
+        let gen_config = Seq2SeqGenConfig::from_config(app_config);
+
+        // Determine compute dtype from KV cache config.
+        // In Candle, KV cache dtype = model compute dtype (they can't differ).
+        let dtype = utils::resolve_compute_dtype(&gen_config.kv_cache);
+        info!(dtype = ?dtype, "Compute dtype (controls weights + KV cache)");
 
         // Load tokenizer and model based on architecture
         let (tokenizer, model) = match arch {
@@ -408,7 +418,8 @@ impl CandleSeq2SeqTask {
             tokenizer,
             arch,
             device,
-            gen_config: Seq2SeqGenConfig::from_config(app_config),
+            dtype,
+            gen_config,
         })
     }
 
@@ -705,11 +716,34 @@ impl CandleSeq2SeqTask {
         let seed = self.gen_config.seed;
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
 
-        for _ in 0..self.gen_config.max_new_tokens {
-            let decoder_tensor = Tensor::new(decoder_ids.as_slice(), &self.device)
-                .map_err(|e| TaskError::Inference(format!("Decoder tensor error: {e}")))?
-                .unsqueeze(0)
-                .map_err(|e| TaskError::Inference(format!("Unsqueeze error: {e}")))?;
+        for step in 0..self.gen_config.max_new_tokens {
+            // Check if we've hit the KV cache length limit.
+            if decoder_ids.len() >= self.gen_config.kv_cache.max_length {
+                debug!(
+                    decoder_len = decoder_ids.len(),
+                    max_cache = self.gen_config.kv_cache.max_length,
+                    "Stopping T5 generation: KV cache length limit reached"
+                );
+                break;
+            }
+
+            // On step 0, feed the full decoder sequence (e.g. [start_token]).
+            // On subsequent steps, feed only the last token — the KV cache
+            // already holds keys/values for all previous positions, so
+            // re-feeding them would be O(n²) redundant work and would
+            // duplicate entries in the cache.
+            let decoder_tensor = if step == 0 {
+                Tensor::new(decoder_ids.as_slice(), &self.device)
+                    .map_err(|e| TaskError::Inference(format!("Decoder tensor error: {e}")))?
+                    .unsqueeze(0)
+                    .map_err(|e| TaskError::Inference(format!("Unsqueeze error: {e}")))?
+            } else {
+                let last_token = *decoder_ids.last().unwrap();
+                Tensor::new(&[last_token], &self.device)
+                    .map_err(|e| TaskError::Inference(format!("Decoder tensor error: {e}")))?
+                    .unsqueeze(0)
+                    .map_err(|e| TaskError::Inference(format!("Unsqueeze error: {e}")))?
+            };
 
             let logits = match &mut *model {
                 Seq2SeqModel::T5 { model, .. } => model
@@ -809,6 +843,16 @@ impl CandleSeq2SeqTask {
 
         // Autoregressive decoding
         for i in 0..sample_len {
+            // Check if we've hit the KV cache length limit.
+            if tokens.len() >= self.gen_config.kv_cache.max_length {
+                debug!(
+                    tokens_len = tokens.len(),
+                    max_cache = self.gen_config.kv_cache.max_length,
+                    "Stopping Whisper decoding: KV cache length limit reached"
+                );
+                break;
+            }
+
             let tokens_tensor = Tensor::new(tokens.as_slice(), &self.device)
                 .map_err(|e| TaskError::Inference(format!("Token tensor error: {e}")))?
                 .unsqueeze(0)
@@ -942,11 +986,24 @@ impl CandleSeq2SeqTask {
             .map_err(|e| TaskError::Inference(format!("Unsqueeze error: {e}")))?;
 
         // Configure generation - use a fresh cache for each transcription
-        let gen_cache = VoxtralCache::new(true, DType::F32, &config.text_config, &self.device)
+        let gen_cache = VoxtralCache::new(true, self.dtype, &config.text_config, &self.device)
             .map_err(|e| TaskError::Inference(format!("Failed to create generation cache: {e}")))?;
 
+        // Cap max_new_tokens by KV cache max_length to prevent OOM.
+        let max_cache = self.gen_config.kv_cache.max_length;
+        let max_new_tokens = if input_len < max_cache {
+            self.gen_config.max_new_tokens.min(max_cache - input_len)
+        } else {
+            debug!(
+                input_len = input_len,
+                max_cache = max_cache,
+                "Voxtral input already exceeds KV cache max_length"
+            );
+            0
+        };
+
         let gen_config = VoxtralGenerationConfig {
-            max_new_tokens: self.gen_config.max_new_tokens,
+            max_new_tokens,
             temperature: self.gen_config.temperature,
             top_p: if self.gen_config.top_p > 0.0 && self.gen_config.top_p < 1.0 {
                 Some(self.gen_config.top_p)
