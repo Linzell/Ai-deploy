@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
-use inference_core::DeviceType;
+use inference_core::{CacheDType, DeviceType, KvCacheConfig};
 use tracing::{debug, info, warn};
 
 use crate::error::{TaskError, TaskResult};
@@ -255,6 +255,66 @@ fn convert_safetensors_dtype(st_dtype: safetensors::Dtype, tensor_name: &str) ->
     }
 }
 
+/// Resolve compute dtype from KV cache configuration.
+///
+/// In Candle, the KV cache dtype is tied to the model compute dtype — you
+/// can't independently quantize the cache. So if the user requests F16 or BF16
+/// for the cache, we change the entire model's compute dtype accordingly.
+///
+/// - F16/BF16: supported, halves memory for weights + KV cache
+/// - Q8_0/Q4_0: not natively supported in Candle (requires GGUF quantized models),
+///   falls back to F16 with a warning
+/// - F32 or None: uses default F32
+///
+/// If `cache_dtype_k` and `cache_dtype_v` differ, we pick the higher precision
+/// of the two to avoid dtype mismatches during attention computation.
+pub fn resolve_compute_dtype(kv_cache: &KvCacheConfig) -> DType {
+    // Determine the target from both K and V preferences.
+    // If they differ, pick the higher-precision one since Candle requires
+    // uniform dtype across model + KV cache.
+    let target = match (&kv_cache.cache_dtype_k, &kv_cache.cache_dtype_v) {
+        (None, None) => return DType::F32,
+        (Some(k), None) => *k,
+        (None, Some(v)) => *v,
+        (Some(k), Some(v)) if k == v => *k,
+        (Some(k), Some(v)) => {
+            // Pick higher precision when K and V differ
+            let k_rank = cache_dtype_precision_rank(*k);
+            let v_rank = cache_dtype_precision_rank(*v);
+            if k_rank >= v_rank {
+                *k
+            } else {
+                *v
+            }
+        }
+    };
+
+    match target {
+        CacheDType::F32 => DType::F32,
+        CacheDType::F16 => DType::F16,
+        CacheDType::BF16 => DType::BF16,
+        CacheDType::Q8_0 | CacheDType::Q4_0 => {
+            warn!(
+                requested = %target,
+                "Candle does not support quantized KV cache ({target}). \
+                 Use GGUF models via llama.cpp for quantized caching. \
+                 Falling back to F16 for reduced memory."
+            );
+            DType::F16
+        }
+    }
+}
+
+/// Precision rank for `CacheDType` (higher = more precision).
+fn cache_dtype_precision_rank(dt: CacheDType) -> u8 {
+    match dt {
+        CacheDType::Q4_0 => 0,
+        CacheDType::Q8_0 => 1,
+        CacheDType::F16 | CacheDType::BF16 => 2,
+        CacheDType::F32 => 3,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,5 +377,58 @@ mod tests {
             PathBuf::from("a.safetensors"),
             PathBuf::from("b.safetensors")
         ]));
+    }
+
+    #[test]
+    fn test_resolve_compute_dtype_defaults_to_f32() {
+        let kv = KvCacheConfig::default();
+        assert_eq!(resolve_compute_dtype(&kv), DType::F32);
+    }
+
+    #[test]
+    fn test_resolve_compute_dtype_f16() {
+        let kv = KvCacheConfig::default().with_cache_dtype(CacheDType::F16);
+        assert_eq!(resolve_compute_dtype(&kv), DType::F16);
+    }
+
+    #[test]
+    fn test_resolve_compute_dtype_bf16() {
+        let kv = KvCacheConfig::default().with_cache_dtype(CacheDType::BF16);
+        assert_eq!(resolve_compute_dtype(&kv), DType::BF16);
+    }
+
+    #[test]
+    fn test_resolve_compute_dtype_quantized_falls_back_to_f16() {
+        let kv = KvCacheConfig::default().with_cache_dtype(CacheDType::Q8_0);
+        assert_eq!(resolve_compute_dtype(&kv), DType::F16);
+
+        let kv = KvCacheConfig::default().with_cache_dtype(CacheDType::Q4_0);
+        assert_eq!(resolve_compute_dtype(&kv), DType::F16);
+    }
+
+    #[test]
+    fn test_resolve_compute_dtype_picks_higher_precision() {
+        // K=F32, V=F16 -> should pick F32
+        let kv = KvCacheConfig::default()
+            .with_cache_dtype_k(CacheDType::F32)
+            .with_cache_dtype_v(CacheDType::F16);
+        assert_eq!(resolve_compute_dtype(&kv), DType::F32);
+
+        // K=F16, V=F32 -> should also pick F32
+        let kv = KvCacheConfig::default()
+            .with_cache_dtype_k(CacheDType::F16)
+            .with_cache_dtype_v(CacheDType::F32);
+        assert_eq!(resolve_compute_dtype(&kv), DType::F32);
+    }
+
+    #[test]
+    fn test_resolve_compute_dtype_single_side() {
+        // Only K set
+        let kv = KvCacheConfig::default().with_cache_dtype_k(CacheDType::F16);
+        assert_eq!(resolve_compute_dtype(&kv), DType::F16);
+
+        // Only V set
+        let kv = KvCacheConfig::default().with_cache_dtype_v(CacheDType::BF16);
+        assert_eq!(resolve_compute_dtype(&kv), DType::BF16);
     }
 }

@@ -44,7 +44,7 @@ use candle_nn::VarBuilder;
 use candle_transformers::generation::LogitsProcessor;
 use candle_transformers::models::llama as llama_model;
 use inference_core::task::{Task, TaskChunk, TaskResult as GrpcTaskResult, TaskStream};
-use inference_core::Config;
+use inference_core::{Config, KvCacheConfig};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
@@ -134,6 +134,8 @@ pub struct CandleGenConfig {
     pub repeat_last_n: usize,
     /// Random seed for reproducibility (None = random)
     pub seed: Option<u64>,
+    /// KV cache configuration (max length, dtype preferences, etc.)
+    pub kv_cache: KvCacheConfig,
 }
 
 impl Default for CandleGenConfig {
@@ -146,6 +148,7 @@ impl Default for CandleGenConfig {
             repeat_penalty: 1.1,
             repeat_last_n: 64,
             seed: None,
+            kv_cache: KvCacheConfig::default(),
         }
     }
 }
@@ -157,6 +160,7 @@ impl CandleGenConfig {
             max_new_tokens: config.max_tokens,
             temperature: f64::from(config.temperature),
             top_p: f64::from(config.top_p),
+            kv_cache: KvCacheConfig::from_config(config),
             ..Default::default()
         }
     }
@@ -273,11 +277,15 @@ impl CandleTextGenTask {
             .map_err(|e| TaskError::ModelLoad(format!("Failed to load tokenizer: {e}")))?;
         info!("Tokenizer loaded");
 
-        // Determine dtype
-        // Note: Using F32 for all devices for consistency. F16 can cause dtype mismatches
-        // in some operations (like KV-cache concatenation) on certain backends.
-        // F32 is safer and works consistently across CPU, Metal, and CUDA.
-        let dtype = DType::F32;
+        // Build generation config first — we need kv_cache settings to pick dtype
+        let gen_config = CandleGenConfig::from_config(config);
+
+        // Determine compute dtype from KV cache config.
+        // In Candle, KV cache dtype = model compute dtype (they can't differ).
+        // F16/BF16 halves memory for both model weights and KV cache.
+        // Q8_0/Q4_0 are not supported (falls back to F16 with a warning).
+        let dtype = utils::resolve_compute_dtype(&gen_config.kv_cache);
+        info!(dtype = ?dtype, "Compute dtype (controls weights + KV cache)");
 
         // Load model weights using safe (non-mmap) loading
         let vb = utils::load_safetensors_safe(&safetensors_files, dtype, &device)?;
@@ -290,13 +298,21 @@ impl CandleTextGenTask {
         let eos_token_ids = Self::get_eos_token_ids(&tokenizer, &config_path);
         info!(eos_tokens = ?eos_token_ids, "EOS token IDs");
 
+        info!(
+            max_cache_length = gen_config.kv_cache.max_length,
+            flash_attention = gen_config.kv_cache.flash_attention,
+            cache_dtype_k = ?gen_config.kv_cache.cache_dtype_k,
+            cache_dtype_v = ?gen_config.kv_cache.cache_dtype_v,
+            "KV cache config"
+        );
+
         Ok(Self {
             name,
             model: Arc::new(Mutex::new(model)),
             tokenizer,
             device,
             dtype,
-            gen_config: CandleGenConfig::from_config(config),
+            gen_config,
             eos_token_ids,
         })
     }
@@ -463,6 +479,18 @@ impl CandleTextGenTask {
         let mut current_input = input_tensor;
 
         for step in 0..self.gen_config.max_new_tokens {
+            // Check if we've hit the KV cache length limit.
+            // Total cached positions = prompt tokens + generated tokens so far.
+            let total_seq_len = prompt_len + step;
+            if total_seq_len >= self.gen_config.kv_cache.max_length {
+                debug!(
+                    total_seq_len = total_seq_len,
+                    max_cache = self.gen_config.kv_cache.max_length,
+                    "Stopping generation: KV cache length limit reached"
+                );
+                break;
+            }
+
             // Forward pass
             // start_pos is where this sequence begins in the KV-cache:
             // - First forward (full prompt): start_pos = 0
@@ -594,6 +622,17 @@ impl CandleTextGenTask {
             let mut current_input = input_tensor;
 
             for step in 0..gen_config.max_new_tokens {
+                // Check if we've hit the KV cache length limit.
+                let total_seq_len = prompt_len + step;
+                if total_seq_len >= gen_config.kv_cache.max_length {
+                    debug!(
+                        total_seq_len = total_seq_len,
+                        max_cache = gen_config.kv_cache.max_length,
+                        "Stopping generation: KV cache length limit reached"
+                    );
+                    break;
+                }
+
                 // Forward pass
                 // start_pos is where this sequence begins in the KV-cache:
                 // - First forward (full prompt): start_pos = 0
@@ -811,6 +850,8 @@ mod tests {
         assert_eq!(config.max_new_tokens, 256);
         assert!((config.temperature - 0.7).abs() < f64::EPSILON);
         assert!((config.top_p - 0.9).abs() < f64::EPSILON);
+        assert_eq!(config.kv_cache.max_length, 2048);
+        assert!(!config.kv_cache.flash_attention);
     }
 
     #[test]

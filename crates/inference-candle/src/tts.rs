@@ -33,7 +33,7 @@ use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_transformers::generation::LogitsProcessor;
 use candle_transformers::models::parler_tts::{Config as ParlerConfig, Model as ParlerModel};
 use inference_core::task::{Task, TaskResult as GrpcTaskResult};
-use inference_core::Config as AppConfig;
+use inference_core::{Config as AppConfig, KvCacheConfig};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -56,6 +56,8 @@ pub struct TtsGenConfig {
     pub top_p: Option<f64>,
     /// Random seed.
     pub seed: u64,
+    /// KV cache configuration (max length, dtype preferences, etc.)
+    pub kv_cache: KvCacheConfig,
 }
 
 impl Default for TtsGenConfig {
@@ -65,6 +67,7 @@ impl Default for TtsGenConfig {
             temperature: 0.0, // Greedy by default for consistent output
             top_p: None,
             seed: 299_792_458,
+            kv_cache: KvCacheConfig::default(),
         }
     }
 }
@@ -80,6 +83,7 @@ impl TtsGenConfig {
             } else {
                 None
             },
+            kv_cache: KvCacheConfig::from_config(config),
             ..Default::default()
         }
     }
@@ -97,6 +101,10 @@ pub struct CandleTtsTask {
     gen_config: TtsGenConfig,
     /// Candle device.
     device: Device,
+    /// Compute dtype (controls weights + KV cache in Candle).
+    /// Currently used only at load time; kept for diagnostics and future use.
+    #[allow(dead_code)]
+    dtype: DType,
     /// Audio sample rate (from model config).
     sample_rate: u32,
 }
@@ -142,10 +150,16 @@ impl CandleTtsTask {
         let tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| TaskError::ModelLoad(format!("Cannot load tokenizer: {e}")))?;
 
-        // Load model weights
-        let model = Self::load_model(model_dir, &parler_config, &device)?;
-
+        // Build generation config first — we need kv_cache settings to pick dtype
         let gen_config = TtsGenConfig::from_config(config);
+
+        // Determine compute dtype from KV cache config.
+        // In Candle, KV cache dtype = model compute dtype (they can't differ).
+        let dtype = utils::resolve_compute_dtype(&gen_config.kv_cache);
+        info!(dtype = ?dtype, "Compute dtype for TTS (controls weights + KV cache)");
+
+        // Load model weights
+        let model = Self::load_model(model_dir, &parler_config, &device, dtype)?;
 
         Ok(Self {
             name,
@@ -153,6 +167,7 @@ impl CandleTtsTask {
             tokenizer,
             gen_config,
             device,
+            dtype,
             sample_rate,
         })
     }
@@ -162,6 +177,7 @@ impl CandleTtsTask {
         model_dir: &Path,
         config: &ParlerConfig,
         device: &Device,
+        dtype: DType,
     ) -> TaskResult<ParlerModel> {
         // Check for single file or sharded weights
         let single_file = model_dir.join("model.safetensors");
@@ -179,7 +195,7 @@ impl CandleTtsTask {
             ));
         };
 
-        let vb = utils::load_safetensors_safe(&weight_files, DType::F32, device)?;
+        let vb = utils::load_safetensors_safe(&weight_files, dtype, device)?;
 
         ParlerModel::new(config, vb)
             .map_err(|e| TaskError::ModelLoad(format!("Cannot create model: {e}")))
@@ -268,13 +284,21 @@ impl CandleTtsTask {
         // Generate audio codes
         let mut model = self.model.lock().await;
 
+        // Cap max_steps by KV cache max_length to prevent unbounded growth
+        let effective_max_steps = self
+            .gen_config
+            .max_steps
+            .min(self.gen_config.kv_cache.max_length);
+        if effective_max_steps < self.gen_config.max_steps {
+            debug!(
+                configured = self.gen_config.max_steps,
+                capped_to = effective_max_steps,
+                "TTS max_steps capped by kv_cache.max_length"
+            );
+        }
+
         let codes = model
-            .generate(
-                &prompt_tensor,
-                &description_tensor,
-                lp,
-                self.gen_config.max_steps,
-            )
+            .generate(&prompt_tensor, &description_tensor, lp, effective_max_steps)
             .map_err(|e| TaskError::Inference(format!("Generation failed: {e}")))?;
 
         debug!(codes_shape = ?codes.shape(), "Generated audio codes");
@@ -441,5 +465,9 @@ mod tests {
         assert_eq!(config.max_steps, 2048);
         assert_eq!(config.temperature, 0.0);
         assert!(config.top_p.is_none());
+        // KV cache should have sensible defaults
+        assert_eq!(config.kv_cache.max_length, 2048);
+        assert!(config.kv_cache.cache_dtype_k.is_none());
+        assert!(config.kv_cache.cache_dtype_v.is_none());
     }
 }

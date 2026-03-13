@@ -1,10 +1,11 @@
 //! Generation configuration for autoregressive text generation.
 //!
 //! This module provides shared generation parameters used across all backends
-//! (ONNX seq2seq, Candle, llama.cpp).
+//! (ONNX seq2seq, Candle, llama.cpp), including KV cache configuration.
 
 use crate::Config;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 /// Generation configuration for autoregressive decoding.
 ///
@@ -129,5 +130,215 @@ impl ModelArchitecture {
     /// Check if this is an encoder-decoder architecture
     pub fn is_encoder_decoder(&self) -> bool {
         matches!(self, Self::EncoderDecoder)
+    }
+}
+
+// ============================================================================
+// KV Cache Configuration
+// ============================================================================
+
+/// Data type for KV cache storage.
+///
+/// Controls how key and value tensors are stored in the attention cache.
+/// Lower precision types reduce memory usage at the cost of some accuracy.
+///
+/// Not all backends support all types — unsupported types are logged as
+/// warnings and silently fall back to the backend default.
+///
+/// ## Backend support matrix
+///
+/// | CacheDType | llama.cpp | Candle | ONNX |
+/// |------------|-----------|--------|------|
+/// | F32        | Yes       | Yes    | Yes  |
+/// | F16        | Yes       | Possible (cast) | No |
+/// | BF16       | Yes       | Device-dependent | No |
+/// | Q8_0       | Yes       | No     | No   |
+/// | Q4_0       | Yes       | No     | No   |
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CacheDType {
+    /// Full precision — maximum quality, most memory.
+    F32,
+    /// Half precision — 2x memory savings, near-lossless for most models.
+    F16,
+    /// BFloat16 — similar to F16, better dynamic range, hardware-dependent.
+    BF16,
+    /// 8-bit quantized — ~4x savings, nearly lossless.
+    /// Recommended as a safe default for llama.cpp.
+    Q8_0,
+    /// 4-bit quantized — ~8x savings.
+    /// Good for V cache; K cache is more sensitive to quantization.
+    Q4_0,
+}
+
+impl fmt::Display for CacheDType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::F32 => write!(f, "f32"),
+            Self::F16 => write!(f, "f16"),
+            Self::BF16 => write!(f, "bf16"),
+            Self::Q8_0 => write!(f, "q8_0"),
+            Self::Q4_0 => write!(f, "q4_0"),
+        }
+    }
+}
+
+impl CacheDType {
+    /// Parse from a string (case-insensitive).
+    ///
+    /// Returns `None` for unrecognized values.
+    pub fn from_str_opt(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "f32" => Some(Self::F32),
+            "f16" => Some(Self::F16),
+            "bf16" => Some(Self::BF16),
+            "q8_0" | "q8" => Some(Self::Q8_0),
+            "q4_0" | "q4" => Some(Self::Q4_0),
+            _ => None,
+        }
+    }
+}
+
+/// KV cache configuration shared across all inference backends.
+///
+/// Controls how the attention key/value cache is allocated, stored, and
+/// managed. Each backend maps these settings to its native API:
+///
+/// - **llama.cpp**: Maps to `LlamaContextParams` (`with_type_k`, `with_type_v`,
+///   `with_flash_attention_policy`, `with_offload_kqv`)
+/// - **Candle**: Cache dtype controls tensor casting before storage; max length
+///   enables cache truncation to prevent OOM
+/// - **ONNX**: Most settings are informational; max length limits generation
+///
+/// ## Configuration
+///
+/// Via TOML:
+/// ```toml
+/// [inference.kv_cache]
+/// cache_dtype_k = "q8_0"
+/// cache_dtype_v = "q8_0"
+/// max_length = 4096
+/// flash_attention = true
+/// offload_to_gpu = true
+/// ```
+///
+/// Via environment variables:
+/// ```text
+/// MAIIA_AI_KV_CACHE_DTYPE_K=q8_0
+/// MAIIA_AI_KV_CACHE_DTYPE_V=q8_0
+/// MAIIA_AI_KV_CACHE_MAX_LENGTH=4096
+/// MAIIA_AI_KV_CACHE_FLASH_ATTENTION=true
+/// MAIIA_AI_KV_CACHE_OFFLOAD_TO_GPU=true
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KvCacheConfig {
+    /// Data type for K (key) cache. `None` = backend default.
+    ///
+    /// The K cache is more sensitive to quantization than the V cache.
+    /// Q8_0 is a safe choice; Q4_0 may degrade quality for K.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_dtype_k: Option<CacheDType>,
+
+    /// Data type for V (value) cache. `None` = backend default.
+    ///
+    /// The V cache tolerates more aggressive quantization than K.
+    /// Both Q8_0 and Q4_0 are viable for V cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_dtype_v: Option<CacheDType>,
+
+    /// Maximum sequence length for the KV cache.
+    ///
+    /// - **llama.cpp**: Maps to `n_ctx` (hard pre-allocation limit)
+    /// - **Candle**: Used for cache truncation / OOM protection
+    /// - **ONNX**: Limits total generation length
+    ///
+    /// Default: 2048.
+    #[serde(default = "default_kv_cache_max_length")]
+    pub max_length: usize,
+
+    /// Enable flash attention if supported by the backend and model.
+    ///
+    /// Flash attention reduces memory usage and improves throughput for
+    /// long sequences. Requires compatible hardware and model architecture.
+    ///
+    /// Note: In llama.cpp, V cache quantization requires flash attention
+    /// to be enabled.
+    #[serde(default)]
+    pub flash_attention: bool,
+
+    /// Offload KV cache and KQV operations to GPU (if available).
+    ///
+    /// Only applies to llama.cpp backend. Default: true (llama.cpp default).
+    #[serde(default = "default_true_kv")]
+    pub offload_to_gpu: bool,
+}
+
+fn default_kv_cache_max_length() -> usize {
+    2048
+}
+
+fn default_true_kv() -> bool {
+    true
+}
+
+impl Default for KvCacheConfig {
+    fn default() -> Self {
+        Self {
+            cache_dtype_k: None,
+            cache_dtype_v: None,
+            max_length: default_kv_cache_max_length(),
+            flash_attention: false,
+            offload_to_gpu: true,
+        }
+    }
+}
+
+impl KvCacheConfig {
+    /// Create from the main `Config`, preserving backward compatibility
+    /// with `max_cache_length`.
+    pub fn from_config(config: &Config) -> Self {
+        config.kv_cache.clone()
+    }
+
+    /// Builder: set K cache dtype.
+    #[must_use]
+    pub fn with_cache_dtype_k(mut self, dtype: CacheDType) -> Self {
+        self.cache_dtype_k = Some(dtype);
+        self
+    }
+
+    /// Builder: set V cache dtype.
+    #[must_use]
+    pub fn with_cache_dtype_v(mut self, dtype: CacheDType) -> Self {
+        self.cache_dtype_v = Some(dtype);
+        self
+    }
+
+    /// Builder: set both K and V cache dtype to the same value.
+    #[must_use]
+    pub fn with_cache_dtype(mut self, dtype: CacheDType) -> Self {
+        self.cache_dtype_k = Some(dtype);
+        self.cache_dtype_v = Some(dtype);
+        self
+    }
+
+    /// Builder: set max cache length.
+    #[must_use]
+    pub fn with_max_length(mut self, max_length: usize) -> Self {
+        self.max_length = max_length;
+        self
+    }
+
+    /// Builder: enable/disable flash attention.
+    #[must_use]
+    pub fn with_flash_attention(mut self, enabled: bool) -> Self {
+        self.flash_attention = enabled;
+        self
+    }
+
+    /// Builder: enable/disable GPU offloading for KV cache.
+    #[must_use]
+    pub fn with_offload_to_gpu(mut self, enabled: bool) -> Self {
+        self.offload_to_gpu = enabled;
+        self
     }
 }

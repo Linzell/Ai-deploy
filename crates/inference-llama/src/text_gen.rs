@@ -33,6 +33,7 @@
 
 use crate::error::{TaskError, TaskResult};
 use async_trait::async_trait;
+use inference_core::generation::{CacheDType, KvCacheConfig};
 use inference_core::task::{Task, TaskChunk, TaskResult as GrpcTaskResult, TaskStream};
 use inference_core::Config;
 use serde::{Deserialize, Serialize};
@@ -57,6 +58,8 @@ pub struct LlamaGenConfig {
     pub n_gpu_layers: u32,
     /// Context size (max sequence length)
     pub n_ctx: u32,
+    /// KV cache configuration (dtype, flash attention, GPU offload).
+    pub kv_cache: KvCacheConfig,
 }
 
 impl Default for LlamaGenConfig {
@@ -69,6 +72,7 @@ impl Default for LlamaGenConfig {
             repeat_penalty: 1.1,
             n_gpu_layers: 0,
             n_ctx: 2048,
+            kv_cache: KvCacheConfig::default(),
         }
     }
 }
@@ -76,12 +80,14 @@ impl Default for LlamaGenConfig {
 impl LlamaGenConfig {
     /// Create from inference config.
     pub fn from_config(config: &Config) -> Self {
+        let kv_cache = KvCacheConfig::from_config(config);
         Self {
             max_new_tokens: config.max_tokens,
             temperature: config.temperature,
             top_p: config.top_p,
             n_gpu_layers: config.n_gpu_layers,
-            n_ctx: config.max_cache_length as u32,
+            n_ctx: kv_cache.max_length as u32,
+            kv_cache,
             ..Default::default()
         }
     }
@@ -107,6 +113,22 @@ struct LlamaWorker {
     request_rx: std::sync::mpsc::Receiver<LlamaRequest>,
     gguf_path: PathBuf,
     gen_config: LlamaGenConfig,
+}
+
+/// Map our backend-agnostic `CacheDType` to llama.cpp's `KvCacheType`.
+///
+/// Only the types that are practical for KV cache quantization are mapped.
+/// llama.cpp supports many more `ggml_type` variants but most are not useful
+/// (or tested) for KV cache storage.
+fn cache_dtype_to_llama(dtype: CacheDType) -> llama_cpp_2::context::params::KvCacheType {
+    use llama_cpp_2::context::params::KvCacheType;
+    match dtype {
+        CacheDType::F32 => KvCacheType::F32,
+        CacheDType::F16 => KvCacheType::F16,
+        CacheDType::BF16 => KvCacheType::BF16,
+        CacheDType::Q8_0 => KvCacheType::Q8_0,
+        CacheDType::Q4_0 => KvCacheType::Q4_0,
+    }
 }
 
 impl LlamaWorker {
@@ -145,10 +167,34 @@ impl LlamaWorker {
             "Model loaded successfully in worker thread"
         );
 
-        // Set up context parameters
-        let ctx_params = LlamaContextParams::default()
+        // Set up context parameters with KV cache configuration
+        let mut ctx_params = LlamaContextParams::default()
             .with_n_ctx(NonZeroU32::new(self.gen_config.n_ctx))
             .with_n_batch(512);
+
+        // Apply KV cache dtype for K cache
+        if let Some(dtype_k) = self.gen_config.kv_cache.cache_dtype_k {
+            let kv_type = cache_dtype_to_llama(dtype_k);
+            info!(dtype = %dtype_k, "Setting K cache type");
+            ctx_params = ctx_params.with_type_k(kv_type);
+        }
+
+        // Apply KV cache dtype for V cache
+        if let Some(dtype_v) = self.gen_config.kv_cache.cache_dtype_v {
+            let kv_type = cache_dtype_to_llama(dtype_v);
+            info!(dtype = %dtype_v, "Setting V cache type");
+            ctx_params = ctx_params.with_type_v(kv_type);
+        }
+
+        // Apply flash attention policy
+        // LLAMA_FLASH_ATTN_TYPE_ENABLED = 1 (from llama_cpp_sys_2)
+        if self.gen_config.kv_cache.flash_attention {
+            info!("Enabling flash attention");
+            ctx_params = ctx_params.with_flash_attention_policy(1);
+        }
+
+        // Apply KV cache GPU offloading
+        ctx_params = ctx_params.with_offload_kqv(self.gen_config.kv_cache.offload_to_gpu);
 
         // Create context
         let mut ctx = match model.new_context(&backend, ctx_params) {
