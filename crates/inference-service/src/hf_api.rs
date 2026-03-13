@@ -205,27 +205,17 @@ pub static TASK_FAMILIES: &[TaskFamily] = &[
         name: "Multimodal",
         description: "Multimodal models",
         tasks: &[
-            (
-                "visual-question-answering",
-                "VQA (Florence-2, etc.)",
-            ),
+            ("visual-question-answering", "VQA (Florence-2, etc.)"),
             ("image-text-to-text", "Vision-language models"),
-            (
-                "document-question-answering",
-                "Document understanding",
-            ),
+            ("document-question-answering", "Document understanding"),
         ],
     },
 ];
 
 /// Query HuggingFace API for popular models with a given pipeline_tag.
-pub async fn search_models(
-    task: &str,
-    limit: usize,
-) -> anyhow::Result<Vec<HfModelSummary>> {
-    let url = format!(
-        "{HF_API_BASE}?pipeline_tag={task}&sort=downloads&direction=-1&limit={limit}"
-    );
+pub async fn search_models(task: &str, limit: usize) -> anyhow::Result<Vec<HfModelSummary>> {
+    let url =
+        format!("{HF_API_BASE}?pipeline_tag={task}&sort=downloads&direction=-1&limit={limit}");
 
     let client = reqwest::Client::new();
     let resp = client

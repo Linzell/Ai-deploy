@@ -15,7 +15,7 @@ preprocess = ["dep:inference-preprocess"]
 postprocess = ["dep:inference-postprocess"]
 
 # ONNX backend features (always available via inference-onnx)
-coreml = ["inference-onnx/coreml"]
+
 cuda = ["inference-onnx/cuda"]
 
 # Candle backend for text-generation, seq2seq, and TTS

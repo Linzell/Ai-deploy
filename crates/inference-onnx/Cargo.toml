@@ -13,8 +13,6 @@ default = ["preprocess", "postprocess"]
 preprocess = ["dep:inference-preprocess"]
 # Enable postprocessing (decode tokens, extract labels, format outputs)
 postprocess = ["dep:inference-postprocess"]
-# Metal/CoreML support for macOS
-coreml = ["ort/coreml"]
 # CUDA support for Linux/Windows
 cuda = ["ort/cuda"]
 

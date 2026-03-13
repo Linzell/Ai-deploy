@@ -32,7 +32,7 @@
 //! - `decoder_model_merged.onnx` - With KV-cache
 
 use crate::error::{TaskError, TaskResult};
-use crate::session::load_session_cpu_on_coreml;
+use crate::session::load_session_from_file;
 use crate::tensor_utils::{json_to_array2_i64, json_to_array_f32};
 use async_trait::async_trait;
 use inference_core::generation::{GenerationConfig, KvCacheConfig, ModelArchitecture};
@@ -268,7 +268,7 @@ impl Seq2SeqTask {
         let decoder_path = decoder_path.as_ref();
         info!(path = %decoder_path.display(), "Loading decoder-only model");
 
-        let decoder = load_session_cpu_on_coreml(decoder_path, config)?;
+        let decoder = load_session_from_file(decoder_path, config)?;
         let decoder_input_names: Vec<String> = decoder
             .inputs()
             .iter()
@@ -377,15 +377,13 @@ impl Seq2SeqTask {
             "Loading encoder-decoder model"
         );
 
-        let encoder = load_session_cpu_on_coreml(encoder_path, config)?;
-        let decoder = load_session_cpu_on_coreml(decoder_path, config)?;
+        let encoder = load_session_from_file(encoder_path, config)?;
+        let decoder = load_session_from_file(decoder_path, config)?;
 
         // Load embed_tokens if present (Florence-2 style)
         let embed_tokens = if let Some(path) = embed_tokens_path {
             info!(embed_tokens = %path.display(), "Loading embed_tokens model");
-            Some(Arc::new(Mutex::new(load_session_cpu_on_coreml(
-                path, config,
-            )?)))
+            Some(Arc::new(Mutex::new(load_session_from_file(path, config)?)))
         } else {
             None
         };

@@ -10,7 +10,7 @@ workspace = true
 [features]
 default = []
 # Metal/CoreML support for macOS (Apple Silicon)
-coreml = ["inference-tasks/coreml"]
+
 # CUDA support for Linux/Windows (NVIDIA GPU)
 cuda = ["inference-tasks/cuda"]
 # Candle backend for text-generation (Rust-native ML)

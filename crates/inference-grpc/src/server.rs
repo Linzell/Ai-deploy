@@ -85,15 +85,14 @@ impl WorkerServer {
     /// Returns the (possibly TLS-configured) builder. When the `tls` feature is not
     /// compiled in, this is a no-op that returns the builder unchanged.
     #[cfg(feature = "tls")]
-    fn apply_tls(
-        &self,
-        builder: Server,
-    ) -> Result<Server> {
+    fn apply_tls(&self, builder: Server) -> Result<Server> {
         if let (Some(cert_path), Some(key_path)) =
             (&self.config.tls_cert_path, &self.config.tls_key_path)
         {
             let cert = std::fs::read(cert_path).map_err(|e| {
-                Error::Config(format!("Failed to read TLS certificate at {cert_path}: {e}"))
+                Error::Config(format!(
+                    "Failed to read TLS certificate at {cert_path}: {e}"
+                ))
             })?;
             let key = std::fs::read(key_path).map_err(|e| {
                 Error::Config(format!("Failed to read TLS private key at {key_path}: {e}"))
@@ -115,10 +114,7 @@ impl WorkerServer {
 
     #[cfg(not(feature = "tls"))]
     #[allow(clippy::unnecessary_wraps)]
-    fn apply_tls(
-        &self,
-        builder: Server,
-    ) -> Result<Server> {
+    fn apply_tls(&self, builder: Server) -> Result<Server> {
         if self.config.tls_cert_path.is_some() || self.config.tls_key_path.is_some() {
             warn!(
                 "TLS cert/key paths are configured but the 'tls' feature is not enabled — \

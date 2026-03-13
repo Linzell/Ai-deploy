@@ -122,10 +122,7 @@ async fn search_and_print_models(task: &str, limit: usize) -> anyhow::Result<()>
     }
 
     println!("Popular models for task '{task}':\n");
-    println!(
-        "  {:<50} {:>12} {:>8}",
-        "MODEL", "DOWNLOADS", "LIKES"
-    );
+    println!("  {:<50} {:>12} {:>8}", "MODEL", "DOWNLOADS", "LIKES");
     println!("  {}", "-".repeat(74));
 
     for m in &models {

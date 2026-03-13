@@ -5,8 +5,14 @@
 //! - Session configuration with optimization level
 //! - Device-specific execution providers (CPU, CUDA)
 //! - Thread configuration for CPU inference
-//! - Automatic CPU fallback on macOS (CoreML is not reliable for ONNX models)
 //! - Pre-loading external data files into memory to work around ONNX Runtime path bugs
+//!
+//! ## macOS / Metal
+//!
+//! ONNX sessions always use CPU on macOS. The `coreml` feature has been removed
+//! because CoreML is unreliable for ONNX models (MLProgram crashes, NeuralNetwork
+//! runtime failures, context leaks). For GPU on macOS, use the Candle backend
+//! (direct Metal) instead.
 
 use std::borrow::Cow;
 use std::path::Path;
@@ -22,15 +28,12 @@ use tracing::{debug, warn};
 
 /// Configure the session builder with the appropriate execution provider.
 ///
-/// On macOS, ONNX sessions always use CPU because CoreML (the only ONNX Runtime
-/// execution provider for Apple hardware) is unreliable:
-/// - MLProgram format: fatal SIGABRT from MPS matmul dimension mismatches
-/// - NeuralNetwork format: runtime failures ("Unable to compute prediction"),
-///   CoreAnalytics context leaks, and heavy partitioning overhead (hundreds of
-///   CPU/GPU context switches per inference)
+/// On macOS (Metal/Auto), ONNX sessions always use CPU — the `coreml` feature
+/// has been removed entirely because CoreML is not production-ready for ONNX.
+/// For GPU on macOS, use the Candle backend (direct Metal).
 ///
-/// For GPU acceleration on macOS, use the Candle backend (direct Metal) instead.
-/// On Linux/Windows, CUDA acceleration works correctly.
+/// On Linux/Windows, CUDA acceleration works correctly when the `cuda` feature
+/// is enabled.
 fn configure_execution_provider(
     mut builder: ort::session::builder::SessionBuilder,
     config: &Config,
@@ -38,18 +41,9 @@ fn configure_execution_provider(
     let device = config.device.resolve();
 
     match device {
-        DeviceType::Cpu | DeviceType::Auto => {
-            builder = builder
-                .with_intra_threads(config.num_threads)
-                .map_err(|e| TaskError::OnnxLoad(e.to_string()))?;
-        }
-        DeviceType::Metal => {
-            // CoreML is not reliable for ONNX models — force CPU on macOS.
-            // See module-level docs for details.
-            warn!(
-                "ONNX Runtime on macOS: using CPU (CoreML is unreliable for ONNX models). \
-                 For GPU acceleration, use the Candle backend instead."
-            );
+        DeviceType::Cpu | DeviceType::Auto | DeviceType::Metal => {
+            // Metal falls through to CPU for ONNX — CoreML is unreliable.
+            // Candle backend handles Metal GPU acceleration separately.
             builder = builder
                 .with_intra_threads(config.num_threads)
                 .map_err(|e| TaskError::OnnxLoad(e.to_string()))?;
@@ -159,53 +153,6 @@ pub fn load_session_from_bytes(bytes: &[u8], config: &Config) -> TaskResult<Sess
         .map_err(|e| TaskError::OnnxLoad(e.to_string()))
 }
 
-/// Load an ONNX session, forcing CPU on CoreML/Metal.
-///
-/// CoreML (NeuralNetwork format) cannot reliably execute many ONNX models:
-/// - Seq2seq/autoregressive models: dynamic KV-cache sequence lengths
-/// - CLIP encoders: runtime failures ("Unable to compute prediction")
-/// - Models with unsupported op combinations that pass load-time validation
-///   but fail during inference
-///
-/// On Linux/Windows with CUDA, GPU acceleration is still used.
-///
-/// # Arguments
-///
-/// * `path` - Path to the ONNX model file
-/// * `config` - Configuration with device and thread settings
-pub fn load_session_cpu_on_coreml(path: &Path, config: &Config) -> TaskResult<Session> {
-    let resolved_device = config.device.resolve();
-
-    if resolved_device == DeviceType::Metal {
-        warn!("Forcing CPU execution on macOS (CoreML incompatible with this model type)");
-        let cpu_config = Config {
-            device: DeviceType::Cpu,
-            ..config.clone()
-        };
-        return load_session_from_file(path, &cpu_config);
-    }
-
-    load_session_from_file(path, config)
-}
-
-/// Load an ONNX session from bytes, forcing CPU on CoreML/Metal.
-///
-/// Same as `load_session_cpu_on_coreml` but loads from memory.
-pub fn load_session_cpu_on_coreml_from_bytes(bytes: &[u8], config: &Config) -> TaskResult<Session> {
-    let resolved_device = config.device.resolve();
-
-    if resolved_device == DeviceType::Metal {
-        warn!("Forcing CPU execution on macOS (CoreML incompatible with this model type)");
-        let cpu_config = Config {
-            device: DeviceType::Cpu,
-            ..config.clone()
-        };
-        return load_session_from_bytes(bytes, &cpu_config);
-    }
-
-    load_session_from_bytes(bytes, config)
-}
-
 /// Find and load external data files associated with an ONNX model.
 ///
 /// ONNX models can store large tensors in external data files (e.g., `model.onnx_data`
@@ -277,42 +224,6 @@ mod tests {
         let config = Config::default();
         let result = load_session_from_file(Path::new("/nonexistent/model.onnx"), &config);
         assert!(result.is_err());
-        assert!(matches!(result, Err(TaskError::ModelNotFound(_))));
-    }
-
-    #[test]
-    fn test_cpu_on_coreml_file_not_found() {
-        let config = Config::default();
-        let result = load_session_cpu_on_coreml(Path::new("/nonexistent/model.onnx"), &config);
-        assert!(result.is_err());
-        assert!(matches!(result, Err(TaskError::ModelNotFound(_))));
-    }
-
-    /// Test that CoreML-safe loader handles Metal device correctly.
-    /// On macOS, Metal should be detected and converted to CPU.
-    /// On other platforms, this test just verifies the function doesn't panic.
-    #[test]
-    fn test_cpu_on_coreml_metal_fallback() {
-        let config = Config {
-            device: DeviceType::Metal,
-            ..Config::default()
-        };
-        let result = load_session_cpu_on_coreml(Path::new("/nonexistent/model.onnx"), &config);
-        // Should fail with ModelNotFound (means it got past the device resolution)
-        assert!(matches!(result, Err(TaskError::ModelNotFound(_))));
-    }
-
-    /// Test that CoreML-safe loader handles GPU device correctly.
-    /// GPU should resolve to Metal on macOS (then fallback to CPU),
-    /// or CUDA on Linux.
-    #[test]
-    fn test_cpu_on_coreml_gpu_fallback() {
-        let config = Config {
-            device: DeviceType::Gpu,
-            ..Config::default()
-        };
-        let result = load_session_cpu_on_coreml(Path::new("/nonexistent/model.onnx"), &config);
-        // Should fail with ModelNotFound (means it got past the device resolution)
         assert!(matches!(result, Err(TaskError::ModelNotFound(_))));
     }
 }
