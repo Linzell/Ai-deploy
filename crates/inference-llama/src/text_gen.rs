@@ -71,7 +71,7 @@ impl Default for LlamaGenConfig {
             top_k: 40,
             repeat_penalty: 1.1,
             n_gpu_layers: 0,
-            n_ctx: 2048,
+            n_ctx: 4096,
             kv_cache: KvCacheConfig::default(),
         }
     }
@@ -81,12 +81,19 @@ impl LlamaGenConfig {
     /// Create from inference config.
     pub fn from_config(config: &Config) -> Self {
         let kv_cache = KvCacheConfig::from_config(config);
+        // Ensure n_ctx is never 0 — llama.cpp requires a positive context size.
+        // Default to 4096 if kv_cache.max_length is 0.
+        let n_ctx = if kv_cache.max_length == 0 {
+            4096
+        } else {
+            kv_cache.max_length as u32
+        };
         Self {
             max_new_tokens: config.max_tokens,
             temperature: config.temperature,
             top_p: config.top_p,
             n_gpu_layers: config.n_gpu_layers,
-            n_ctx: kv_cache.max_length as u32,
+            n_ctx,
             kv_cache,
             ..Default::default()
         }
@@ -168,9 +175,21 @@ impl LlamaWorker {
         );
 
         // Set up context parameters with KV cache configuration
+        //
+        // IMPORTANT: n_batch must be large enough to process the prompt in one go
+        // (or be handled in chunks). We set it equal to n_ctx following the pattern
+        // used in llama.cpp's official examples (openai_stream, tools, server).
+        let n_ctx = self.gen_config.n_ctx;
         let mut ctx_params = LlamaContextParams::default()
-            .with_n_ctx(NonZeroU32::new(self.gen_config.n_ctx))
-            .with_n_batch(512);
+            .with_n_ctx(NonZeroU32::new(n_ctx))
+            .with_n_batch(n_ctx);
+
+        info!(
+            n_ctx = n_ctx,
+            n_batch = n_ctx,
+            n_ctx_train = model.n_ctx_train(),
+            "Context parameters configured"
+        );
 
         // Apply KV cache dtype for K cache
         if let Some(dtype_k) = self.gen_config.kv_cache.cache_dtype_k {
@@ -262,22 +281,40 @@ impl LlamaWorker {
             ));
         }
 
-        debug!(prompt_len = prompt_len, "Tokenized prompt");
+        let n_ctx = ctx.n_ctx() as usize;
+
+        // Verify KV cache can fit prompt + generated tokens
+        let n_kv_req = prompt_len + gen_config.max_new_tokens;
+        if n_kv_req > n_ctx {
+            info!(
+                prompt_len = prompt_len,
+                max_new_tokens = gen_config.max_new_tokens,
+                n_ctx = n_ctx,
+                "Prompt + max_new_tokens exceeds n_ctx, generation will stop at context limit"
+            );
+        }
+
+        debug!(
+            prompt_len = prompt_len,
+            n_ctx = n_ctx,
+            "Tokenized prompt"
+        );
 
         // Clear the KV cache
         ctx.clear_kv_cache();
 
-        // Create batch for prompt processing
-        let mut batch = LlamaBatch::new(512, 1);
+        // Create batch with capacity matching context size
+        let batch_capacity = gen_config.n_ctx.max(512) as usize;
+        let mut batch = LlamaBatch::new(batch_capacity, 1);
 
         // Add prompt tokens to batch
-        for (i, token) in tokens.iter().enumerate() {
-            let is_last = i == tokens.len() - 1;
-            let pos = i32::try_from(i).map_err(|_| {
-                TaskError::Inference("Position overflow: prompt too long".to_string())
-            })?;
+        let last_index = i32::try_from(prompt_len - 1).map_err(|_| {
+            TaskError::Inference("Position overflow: prompt too long".to_string())
+        })?;
+        for (i, token) in (0_i32..).zip(tokens.iter()) {
+            let is_last = i == last_index;
             batch
-                .add(*token, pos, &[0], is_last)
+                .add(*token, i, &[0], is_last)
                 .map_err(|e| TaskError::Inference(format!("Failed to add token to batch: {e}")))?;
         }
 
@@ -303,11 +340,20 @@ impl LlamaWorker {
         // Generation loop
         let decode_start = std::time::Instant::now();
         let mut generated_tokens = Vec::new();
-        let mut current_pos = prompt_len;
+        let mut n_cur = batch.n_tokens();
 
         for _step in 0..gen_config.max_new_tokens {
-            // Sample next token
-            let new_token = sampler.sample(ctx, -1);
+            // Bail out if we've reached the context limit
+            if n_cur as usize >= n_ctx {
+                info!(n_cur = n_cur, n_ctx = n_ctx, "Reached context limit");
+                break;
+            }
+
+            // Sample next token from the last logit position
+            let new_token = sampler.sample(ctx, batch.n_tokens() - 1);
+
+            // Accept the token to update sampler state (repetition penalty, etc.)
+            sampler.accept(new_token);
 
             // Check for EOS
             if new_token == eos_token {
@@ -319,18 +365,15 @@ impl LlamaWorker {
 
             // Prepare batch for next token
             batch.clear();
-            let pos = i32::try_from(current_pos).map_err(|_| {
-                TaskError::Inference("Position overflow: sequence too long".to_string())
-            })?;
             batch
-                .add(new_token, pos, &[0], true)
+                .add(new_token, n_cur, &[0], true)
                 .map_err(|e| TaskError::Inference(format!("Failed to add token: {e}")))?;
+
+            n_cur += 1;
 
             // Decode
             ctx.decode(&mut batch)
                 .map_err(|e| TaskError::Inference(format!("Decode failed: {e}")))?;
-
-            current_pos += 1;
         }
 
         let decode_ms = decode_start.elapsed().as_millis();
@@ -400,20 +443,23 @@ impl LlamaWorker {
             return;
         }
 
+        let n_ctx = ctx.n_ctx() as usize;
+
         // Clear the KV cache
         ctx.clear_kv_cache();
 
-        // Create batch for prompt processing
-        let mut batch = LlamaBatch::new(512, 1);
+        // Create batch with capacity matching context size
+        let batch_capacity = gen_config.n_ctx.max(512) as usize;
+        let mut batch = LlamaBatch::new(batch_capacity, 1);
 
         // Add prompt tokens to batch
-        for (i, token) in tokens.iter().enumerate() {
-            let is_last = i == tokens.len() - 1;
-            let Ok(pos) = i32::try_from(i) else {
-                let _ = chunk_tx.blocking_send(TaskChunk::error("Position overflow".to_string()));
-                return;
-            };
-            if let Err(e) = batch.add(*token, pos, &[0], is_last) {
+        let Ok(last_index) = i32::try_from(prompt_len - 1) else {
+            let _ = chunk_tx.blocking_send(TaskChunk::error("Position overflow".to_string()));
+            return;
+        };
+        for (i, token) in (0_i32..).zip(tokens.iter()) {
+            let is_last = i == last_index;
+            if let Err(e) = batch.add(*token, i, &[0], is_last) {
                 let _ = chunk_tx.blocking_send(TaskChunk::error(format!(
                     "Failed to add token to batch: {e}"
                 )));
@@ -438,11 +484,19 @@ impl LlamaWorker {
         // Generation loop with streaming
         let mut generated_text = String::new();
         let mut num_tokens = 0;
-        let mut current_pos = prompt_len;
+        let mut n_cur = batch.n_tokens();
 
         for _step in 0..gen_config.max_new_tokens {
-            // Sample next token
-            let new_token = sampler.sample(ctx, -1);
+            // Bail out if we've reached the context limit
+            if n_cur as usize >= n_ctx {
+                break;
+            }
+
+            // Sample next token from the last logit position
+            let new_token = sampler.sample(ctx, batch.n_tokens() - 1);
+
+            // Accept the token to update sampler state
+            sampler.accept(new_token);
 
             // Check for EOS
             if new_token == eos_token {
@@ -472,19 +526,16 @@ impl LlamaWorker {
 
             // Prepare batch for next token
             batch.clear();
-            let Ok(pos) = i32::try_from(current_pos) else {
-                break;
-            };
-            if batch.add(new_token, pos, &[0], true).is_err() {
+            if batch.add(new_token, n_cur, &[0], true).is_err() {
                 break;
             }
+
+            n_cur += 1;
 
             // Decode
             if ctx.decode(&mut batch).is_err() {
                 break;
             }
-
-            current_pos += 1;
         }
 
         // Send final chunk

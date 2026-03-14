@@ -8,19 +8,23 @@ description = "Main entrypoint for inference service"
 workspace = true
 
 [features]
-default = []
-# Metal/CoreML support for macOS (Apple Silicon)
-
+default = ["candle", "llama"]
+# Metal GPU is auto-enabled on macOS via target-specific deps in inference-candle
+# and inference-llama — no feature flag needed for macOS users.
+# The "metal" feature below is kept for backward compatibility / explicit override.
+metal = ["candle-metal", "llama-metal"]
+# CUDA requires explicit opt-in (Linux/Windows only)
+all-cuda = ["cuda", "candle-cuda", "llama-cuda"]
 # CUDA support for Linux/Windows (NVIDIA GPU)
 cuda = ["inference-tasks/cuda"]
 # Candle backend for text-generation (Rust-native ML)
 candle = ["inference-tasks/candle"]
-candle-metal = ["inference-tasks/candle-metal"]
-candle-cuda = ["inference-tasks/candle-cuda"]
+candle-metal = ["candle", "inference-tasks/candle-metal"]
+candle-cuda = ["candle", "inference-tasks/candle-cuda"]
 # Llama.cpp backend for GGUF models (GPT-OSS-20B, etc.)
 llama = ["inference-tasks/llama"]
-llama-metal = ["inference-tasks/llama-metal"]
-llama-cuda = ["inference-tasks/llama-cuda"]
+llama-metal = ["llama", "inference-tasks/llama-metal"]
+llama-cuda = ["llama", "inference-tasks/llama-cuda"]
 # TLS support for gRPC server
 tls = ["inference-grpc/tls"]
 
@@ -50,6 +54,8 @@ serde_json.workspace = true
 
 # CLI
 clap = { version = "4", features = ["derive"] }
+dialoguer = { version = "0.11", features = ["fuzzy-select"] }
+console = "0.15"
 
 # HTTP client (for HuggingFace API)
 reqwest = { version = "0.12", features = ["json"] }

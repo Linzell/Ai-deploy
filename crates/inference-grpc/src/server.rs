@@ -188,20 +188,17 @@ impl WorkerServer {
     ///
     /// On receiving a shutdown signal:
     /// 1. Stops accepting new connections
-    /// 2. Waits up to `shutdown_drain_seconds` for in-flight requests to complete
-    /// 3. Forcefully terminates remaining requests after the drain period
+    /// 2. Waits for in-flight requests to complete (handled by tonic)
+    /// 3. Returns
     pub async fn serve_with_shutdown(self) -> Result<()> {
         let addr = format!("0.0.0.0:{}", self.config.grpc_port)
             .parse()
             .map_err(|e| Error::Config(format!("Invalid address: {e}")))?;
 
-        let drain_duration = Duration::from_secs(self.config.shutdown_drain_seconds);
-
         info!(
-            "Starting gRPC server on {} for task '{}' (drain={}s, timeout={}ms, max_payload={}B, concurrency={}, tls={})",
+            "Starting gRPC server on {} for task '{}' (timeout={}ms, max_payload={}B, concurrency={}, tls={})",
             addr,
             self.task.name(),
-            self.config.shutdown_drain_seconds,
             self.config.request_timeout_ms,
             self.config.max_payload_size_bytes,
             if self.config.max_concurrent_requests > 0 {
@@ -253,13 +250,6 @@ impl WorkerServer {
                 .await
                 .map_err(|e| Error::Loader(format!("Server error: {e}")))?;
         }
-
-        // Give in-flight requests time to finish
-        info!(
-            "Shutdown signal received, draining for up to {}s...",
-            drain_duration.as_secs()
-        );
-        tokio::time::sleep(drain_duration).await;
 
         info!("Server shutdown complete");
         Ok(())

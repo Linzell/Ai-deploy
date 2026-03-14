@@ -374,9 +374,12 @@ impl CandleSeq2SeqTask {
         // Build generation config first — we need kv_cache settings to pick dtype
         let gen_config = Seq2SeqGenConfig::from_config(app_config);
 
-        // Determine compute dtype from KV cache config.
+        // Determine compute dtype from KV cache config + model's native dtype.
         // In Candle, KV cache dtype = model compute dtype (they can't differ).
-        let dtype = utils::resolve_compute_dtype(&gen_config.kv_cache);
+        let model_dtype = utils::read_model_dtype(&config_path);
+        // Seq2seq models (Whisper, T5) are typically small enough for F16 on CPU,
+        // but we pass 0 for weight_size to let the threshold logic decide.
+        let dtype = utils::resolve_compute_dtype(&gen_config.kv_cache, model_dtype, &device, 0);
         info!(dtype = ?dtype, "Compute dtype (controls weights + KV cache)");
 
         // Load tokenizer and model based on architecture

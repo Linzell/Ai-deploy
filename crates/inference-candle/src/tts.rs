@@ -153,9 +153,11 @@ impl CandleTtsTask {
         // Build generation config first — we need kv_cache settings to pick dtype
         let gen_config = TtsGenConfig::from_config(config);
 
-        // Determine compute dtype from KV cache config.
+        // Determine compute dtype from KV cache config + model's native dtype.
         // In Candle, KV cache dtype = model compute dtype (they can't differ).
-        let dtype = utils::resolve_compute_dtype(&gen_config.kv_cache);
+        // TTS models are small, pass 0 for weight size.
+        let model_dtype = utils::read_model_dtype(&model_dir.join("config.json"));
+        let dtype = utils::resolve_compute_dtype(&gen_config.kv_cache, model_dtype, &device, 0);
         info!(dtype = ?dtype, "Compute dtype for TTS (controls weights + KV cache)");
 
         // Load model weights

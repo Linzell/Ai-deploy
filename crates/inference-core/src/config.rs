@@ -184,6 +184,12 @@ impl DeviceType {
     pub const fn is_auto(&self) -> bool {
         matches!(self, Self::Auto)
     }
+
+    /// Returns `true` if this device type is a GPU variant (Metal, Cuda, or generic Gpu).
+    #[must_use]
+    pub const fn is_gpu(&self) -> bool {
+        matches!(self, Self::Metal | Self::Cuda | Self::Gpu)
+    }
 }
 
 impl From<&str> for DeviceType {
@@ -450,10 +456,6 @@ pub struct ServiceConfig {
     #[serde(default = "default_max_payload_size_bytes")]
     pub max_payload_size_bytes: usize,
 
-    /// Seconds to drain in-flight requests during shutdown. Default: 30.
-    #[serde(default = "default_shutdown_drain_seconds")]
-    pub shutdown_drain_seconds: u64,
-
     /// Maximum concurrent in-flight requests (0 = unlimited). Default: 64.
     #[serde(default = "default_max_concurrent_requests")]
     pub max_concurrent_requests: usize,
@@ -496,9 +498,6 @@ fn default_request_timeout_ms() -> u64 {
 fn default_max_payload_size_bytes() -> usize {
     10 * 1024 * 1024 // 10 MiB
 }
-fn default_shutdown_drain_seconds() -> u64 {
-    30
-}
 fn default_max_concurrent_requests() -> usize {
     64
 }
@@ -516,7 +515,6 @@ impl Default for ServiceConfig {
             enable_cache: default_true(),
             request_timeout_ms: default_request_timeout_ms(),
             max_payload_size_bytes: default_max_payload_size_bytes(),
-            shutdown_drain_seconds: default_shutdown_drain_seconds(),
             max_concurrent_requests: default_max_concurrent_requests(),
             tls_cert_path: None,
             tls_key_path: None,
@@ -636,8 +634,6 @@ pub struct Config {
     pub request_timeout_ms: u64,
     /// Maximum payload size in bytes. Default: 10 MiB.
     pub max_payload_size_bytes: usize,
-    /// Seconds to drain in-flight requests during shutdown. Default: 30.
-    pub shutdown_drain_seconds: u64,
     /// Maximum concurrent in-flight requests (0 = unlimited). Default: 64.
     pub max_concurrent_requests: usize,
 
@@ -684,7 +680,6 @@ impl Default for Config {
             enable_cache: true,
             request_timeout_ms: 300_000,              // 5 minutes
             max_payload_size_bytes: 10 * 1024 * 1024, // 10 MiB
-            shutdown_drain_seconds: 30,
             max_concurrent_requests: 64,
             tls_cert_path: None,
             tls_key_path: None,
@@ -845,7 +840,6 @@ impl Config {
         self.enable_cache = toml.service.enable_cache;
         self.request_timeout_ms = toml.service.request_timeout_ms;
         self.max_payload_size_bytes = toml.service.max_payload_size_bytes;
-        self.shutdown_drain_seconds = toml.service.shutdown_drain_seconds;
         self.max_concurrent_requests = toml.service.max_concurrent_requests;
         self.tls_cert_path.clone_from(&toml.service.tls_cert_path);
         self.tls_key_path.clone_from(&toml.service.tls_key_path);
@@ -981,9 +975,6 @@ impl Config {
         }
         if let Some(v) = get_env("MAX_PAYLOAD_SIZE_BYTES").and_then(|s| s.parse().ok()) {
             self.max_payload_size_bytes = v;
-        }
-        if let Some(v) = get_env("SHUTDOWN_DRAIN_SECONDS").and_then(|s| s.parse().ok()) {
-            self.shutdown_drain_seconds = v;
         }
         if let Some(v) = get_env("MAX_CONCURRENT_REQUESTS").and_then(|s| s.parse().ok()) {
             self.max_concurrent_requests = v;
@@ -1125,8 +1116,10 @@ impl Config {
 
     /// Resolve `DeviceType::Auto` to a concrete device by probing for GPU.
     ///
-    /// Also sets `n_gpu_layers` to 99 for Llama backend when a GPU is detected,
-    /// unless `n_gpu_layers` was explicitly set to a non-zero value.
+    /// Also sets performance defaults for Llama backend when a GPU is detected:
+    /// - `n_gpu_layers = 99` (offload all layers)
+    /// - `flash_attention = true` (faster attention on Metal/CUDA)
+    /// - `cache_dtype_k/v = Q8_0` (reduces memory bandwidth, ~lossless)
     fn resolve_auto_device(&mut self) {
         if !self.device.is_auto() {
             return;
@@ -1142,6 +1135,24 @@ impl Config {
         {
             info!("Auto-setting n_gpu_layers=99 for llama backend with GPU");
             self.n_gpu_layers = 99;
+        }
+
+        // For llama backend with GPU: auto-enable flash attention and Q8_0
+        // KV cache if the user hasn't explicitly configured them.
+        // Flash attention is a major throughput win on Metal/CUDA.
+        // Q8_0 KV cache reduces memory bandwidth with negligible quality loss.
+        if self.device != DeviceType::Cpu && matches!(self.backend, BackendType::Llama) {
+            if !self.kv_cache.flash_attention {
+                info!("Auto-enabling flash attention for llama backend with GPU");
+                self.kv_cache.flash_attention = true;
+            }
+            if self.kv_cache.cache_dtype_k.is_none() {
+                info!("Auto-setting KV cache dtype to Q8_0 for llama backend with GPU");
+                self.kv_cache.cache_dtype_k = Some(crate::generation::CacheDType::Q8_0);
+            }
+            if self.kv_cache.cache_dtype_v.is_none() {
+                self.kv_cache.cache_dtype_v = Some(crate::generation::CacheDType::Q8_0);
+            }
         }
     }
 
@@ -1408,7 +1419,6 @@ onnx_file = "model.onnx"
         let config = Config::default();
         assert_eq!(config.request_timeout_ms, 300_000);
         assert_eq!(config.max_payload_size_bytes, 10 * 1024 * 1024);
-        assert_eq!(config.shutdown_drain_seconds, 30);
         assert_eq!(config.max_concurrent_requests, 64);
     }
 
@@ -1421,14 +1431,12 @@ type = "echo"
 [service]
 request_timeout_ms = 60000
 max_payload_size_bytes = 5242880
-shutdown_drain_seconds = 10
 max_concurrent_requests = 128
 "#;
 
         let toml_config: TomlConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(toml_config.service.request_timeout_ms, 60000);
         assert_eq!(toml_config.service.max_payload_size_bytes, 5_242_880);
-        assert_eq!(toml_config.service.shutdown_drain_seconds, 10);
         assert_eq!(toml_config.service.max_concurrent_requests, 128);
     }
 

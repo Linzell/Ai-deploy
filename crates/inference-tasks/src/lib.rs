@@ -117,3 +117,24 @@ pub use inference_llama::{
 // Re-export preprocessing types for convenience
 #[cfg(feature = "preprocess")]
 pub use inference_preprocess::{PreprocessError, PreprocessResult, Preprocessor, RawInput};
+
+// ============================================================================
+// GPU Availability Detection
+// ============================================================================
+
+/// Returns `true` if GPU acceleration is compiled into this build.
+///
+/// - **macOS**: always `true` — Metal is auto-enabled via target-specific
+///   dependencies in `inference-candle` and `inference-llama`.
+/// - **Linux/Windows**: `true` only if `candle-cuda` or `llama-cuda` features
+///   are explicitly enabled at build time.
+///
+/// This tells you whether the runtime device will actually use the GPU or
+/// silently fall back to CPU — fixing the gap where `auto_detect_device()`
+/// returns `Metal`/`Cuda` but GPU support isn't actually compiled in.
+#[must_use]
+pub fn is_gpu_compiled() -> bool {
+    // Metal is auto-compiled on macOS via target-specific deps — no feature flag needed.
+    // CUDA requires explicit feature flags.
+    cfg!(target_os = "macos") || cfg!(feature = "candle-cuda") || cfg!(feature = "llama-cuda")
+}

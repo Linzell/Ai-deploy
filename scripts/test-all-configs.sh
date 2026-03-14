@@ -248,14 +248,13 @@ kill_server
 # Detect platform and set GPU build features
 BUILD_FEATURES=""
 if [[ "$(uname)" == "Darwin" ]]; then
-    echo -e "${YELLOW}Detected macOS - enabling Metal (Candle) + Llama${NC}"
-    BUILD_FEATURES="--features candle-metal,llama"
+    echo -e "${YELLOW}Detected macOS - enabling Metal GPU acceleration${NC}"
+    BUILD_FEATURES="--features metal"
 elif command -v nvidia-smi &> /dev/null; then
-    echo -e "${YELLOW}Detected NVIDIA GPU - enabling CUDA acceleration + Candle + Llama${NC}"
-    BUILD_FEATURES="--features cuda,candle-cuda,llama"
+    echo -e "${YELLOW}Detected NVIDIA GPU - enabling CUDA acceleration${NC}"
+    BUILD_FEATURES="--features all-cuda"
 else
-    echo -e "${YELLOW}No GPU detected - enabling Candle CPU + Llama${NC}"
-    BUILD_FEATURES="--features candle,llama"
+    echo -e "${YELLOW}No GPU detected - CPU-only (default features)${NC}"
 fi
 
 echo -e "${YELLOW}Building release binary...${NC}"

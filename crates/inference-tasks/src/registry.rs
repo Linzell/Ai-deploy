@@ -109,50 +109,52 @@ impl TaskRegistry {
 
     /// Determine if we should use llama.cpp backend for GGUF models.
     fn should_use_llama(config: &Config) -> bool {
-        match config.backend {
-            BackendType::Llama => {
-                #[cfg(feature = "llama")]
-                {
-                    true
-                }
-                #[cfg(not(feature = "llama"))]
-                {
-                    tracing::warn!(
-                        "Llama backend requested but 'llama' feature not enabled, falling back"
-                    );
-                    false
-                }
+        let wants_llama = match config.backend {
+            BackendType::Llama => true,
+            // Auto + gguf_file present → inferred from model metadata
+            BackendType::Auto => config.gguf_file.is_some(),
+            _ => false,
+        };
+
+        if wants_llama {
+            #[cfg(feature = "llama")]
+            {
+                return true;
             }
-            _ => false, // Only explicit llama backend uses llama.cpp
+            #[cfg(not(feature = "llama"))]
+            {
+                tracing::warn!(
+                    "Llama backend requested but 'llama' feature not enabled. \
+                     Rebuild with: cargo build --features llama"
+                );
+                return false;
+            }
         }
+
+        false
     }
 
     /// Determine if we should use Candle backend for decoder-only (text-generation).
     fn should_use_candle(config: &Config) -> bool {
+        if !config.task_type.is_decoder_only() {
+            return false;
+        }
+
         match config.backend {
-            BackendType::Candle => {
-                #[cfg(feature = "candle")]
-                {
-                    // For decoder-only models (text-generation)
-                    config.task_type.is_decoder_only()
-                }
-                #[cfg(not(feature = "candle"))]
-                {
-                    tracing::warn!(
-                        "Candle backend requested but feature not enabled, falling back to ONNX"
-                    );
-                    false
-                }
-            }
             BackendType::Onnx | BackendType::Llama => false,
-            BackendType::Auto => {
-                // Auto: use Candle for text-generation if feature is enabled
+            BackendType::Candle | BackendType::Auto => {
                 #[cfg(feature = "candle")]
                 {
-                    config.task_type.is_decoder_only() // text-generation
+                    true
                 }
                 #[cfg(not(feature = "candle"))]
                 {
+                    if matches!(config.backend, BackendType::Candle) {
+                        tracing::warn!(
+                            "Candle backend requested but 'candle' feature not enabled, falling back to ONNX. \
+                             Rebuild with: cargo build --features candle-metal"
+                        );
+                    }
                     false
                 }
             }
@@ -175,12 +177,18 @@ impl TaskRegistry {
             return false;
         }
 
+        let is_enc_dec_seq2seq =
+            config.task_type.is_seq2seq() && !config.task_type.is_decoder_only();
+
+        if !is_enc_dec_seq2seq {
+            return false;
+        }
+
         match config.backend {
             BackendType::Candle => {
                 #[cfg(feature = "candle")]
                 {
-                    // Use Candle seq2seq for encoder-decoder models (not decoder-only, not TTS)
-                    config.task_type.is_seq2seq() && !config.task_type.is_decoder_only()
+                    true
                 }
                 #[cfg(not(feature = "candle"))]
                 {
@@ -189,9 +197,9 @@ impl TaskRegistry {
             }
             BackendType::Onnx | BackendType::Llama => false,
             BackendType::Auto => {
-                // Auto: prefer Candle for ASR tasks (ONNX Whisper has KV-cache issues)
                 #[cfg(feature = "candle")]
                 {
+                    // Auto: prefer Candle for ASR (ONNX Whisper has KV-cache issues)
                     let s = config.task_type.as_str().to_lowercase().replace('-', "_");
                     matches!(s.as_str(), "automatic_speech_recognition")
                 }
@@ -205,41 +213,20 @@ impl TaskRegistry {
 
     /// Determine if we should use Candle backend for TTS tasks.
     ///
-    /// Candle TTS supports:
-    /// - Parler TTS (high-quality, supports voice descriptions)
-    ///
-    /// ONNX MMS-TTS has tokenizer compatibility issues, so we prefer Candle for TTS.
+    /// TTS always routes through the Candle path (even if the feature is off,
+    /// so the user gets a clear "enable candle feature" error instead of a
+    /// confusing tokenizer 404 from the ONNX fallback).
     fn should_use_candle_tts(config: &Config) -> bool {
         if !config.task_type.is_tts() {
             return false;
         }
 
         match config.backend {
-            BackendType::Candle => {
-                #[cfg(feature = "candle")]
-                {
-                    true
-                }
-                #[cfg(not(feature = "candle"))]
-                {
-                    tracing::warn!(
-                        "Candle TTS backend requested but feature not enabled, falling back to ONNX"
-                    );
-                    false
-                }
-            }
+            // Explicit ONNX/Llama: user knows what they're doing
             BackendType::Onnx | BackendType::Llama => false,
-            BackendType::Auto => {
-                // Auto: prefer Candle for TTS (ONNX MMS-TTS has tokenizer issues)
-                #[cfg(feature = "candle")]
-                {
-                    true
-                }
-                #[cfg(not(feature = "candle"))]
-                {
-                    false
-                }
-            }
+            // Candle or Auto: always route to the Candle TTS path
+            // (create_candle_tts_task handles the "feature not enabled" error)
+            BackendType::Candle | BackendType::Auto => true,
         }
     }
 
@@ -393,7 +380,10 @@ impl TaskRegistry {
     #[allow(clippy::unused_async)]
     async fn create_candle_task(_config: &Config, _task_name: String) -> TaskResult<Box<dyn Task>> {
         Err(TaskError::Config(
-            "Candle backend requested but 'candle' feature is not enabled".into(),
+            "Candle backend requested but 'candle' feature is not enabled. \
+             Rebuild with: cargo build --features candle-metal  (macOS) \
+             or: cargo build --features candle-cuda  (Linux/NVIDIA)"
+                .into(),
         ))
     }
 
@@ -460,7 +450,7 @@ impl TaskRegistry {
         _task_name: String,
     ) -> TaskResult<Box<dyn Task>> {
         Err(TaskError::Config(
-            "Candle TTS backend requested but 'candle' feature is not enabled".into(),
+            "Text-to-speech requires the 'candle' feature. Rebuild with: cargo build --features candle".into(),
         ))
     }
 

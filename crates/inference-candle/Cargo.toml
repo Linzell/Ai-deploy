@@ -9,13 +9,12 @@ workspace = true
 
 [features]
 default = []
-# Metal/CoreML support for macOS
+# Explicit Metal/CUDA features kept for backward compatibility and manual override.
+# On macOS, Metal is auto-enabled via target-specific deps below — these features
+# are only needed if you want to force GPU on a platform where it's not auto-detected.
 metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
-# CUDA support for Linux/Windows
+# CUDA acceleration for Linux/Windows (NVIDIA GPU)
 cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
-# Internal feature flags used for device resolution
-candle-metal = []
-candle-cuda = []
 
 [dependencies]
 inference-core.path = "../inference-core"
@@ -29,7 +28,7 @@ tracing.workspace = true
 futures.workspace = true
 thiserror.workspace = true
 
-# Candle ML framework
+# Candle ML framework (CPU-only base)
 candle-core.workspace = true
 candle-nn.workspace = true
 candle-transformers.workspace = true
@@ -54,6 +53,14 @@ base64 = "0.22"
 
 # Async streams
 async-stream = "0.3"
+
+# --- Auto-enable Metal on macOS (Apple Silicon / Apple GPU) ---
+# With resolver = "2", these features are only activated when targeting macOS.
+# On Linux/Windows, the base CPU-only candle deps above are used.
+[target.'cfg(target_os = "macos")'.dependencies]
+candle-core = { workspace = true, features = ["metal"] }
+candle-nn = { workspace = true, features = ["metal"] }
+candle-transformers = { workspace = true, features = ["metal"] }
 
 [dev-dependencies]
 tempfile = "3"

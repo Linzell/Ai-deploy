@@ -21,7 +21,6 @@ fn has_extension(filename: &str, ext: &str) -> bool {
 #[allow(dead_code)]
 pub struct HfModelSummary {
     /// Model ID (e.g., `Qwen/Qwen2.5-0.5B-Instruct`)
-    #[serde(alias = "modelId")]
     pub id: String,
     /// Number of downloads
     #[serde(default)]
@@ -42,7 +41,6 @@ pub struct HfModelSummary {
 #[allow(dead_code)]
 pub struct HfModelInfo {
     /// Model ID
-    #[serde(alias = "modelId")]
     pub id: String,
     /// Pipeline tag (task type)
     #[serde(default)]
@@ -64,6 +62,9 @@ pub struct HfFileSibling {
     /// Relative file path (e.g., `onnx/model.onnx`, `model.safetensors`)
     #[serde(rename = "rfilename")]
     pub filename: String,
+    /// File size in bytes (available when fetched with `blobs=true`).
+    #[serde(default)]
+    pub size: Option<u64>,
 }
 
 impl HfModelInfo {
@@ -86,6 +87,11 @@ impl HfModelInfo {
         self.siblings
             .iter()
             .any(|f| has_extension(&f.filename, "gguf"))
+    }
+
+    /// Returns true if the model has at least one supported weight format.
+    pub fn has_supported_files(&self) -> bool {
+        self.has_safetensors() || self.has_onnx() || self.has_gguf()
     }
 
     /// Find the first ONNX model file in the repo.
@@ -111,40 +117,87 @@ impl HfModelInfo {
     }
 
     /// Find the first GGUF file in the repo.
+    /// Prefers common quantization levels in order: Q4_K_M, Q5_K_M, Q4_K_S, Q5_K_S, Q8_0.
+    /// Falls back to the first GGUF file if none of the preferred patterns match.
     pub fn find_gguf_file(&self) -> Option<&str> {
+        // Preferred quantization patterns in priority order (good quality/size tradeoff for CPU)
+        let preferred = ["Q4_K_M", "Q5_K_M", "Q4_K_S", "Q5_K_S", "Q8_0", "Q6_K"];
+        let gguf_files: Vec<&HfFileSibling> = self
+            .siblings
+            .iter()
+            .filter(|f| has_extension(&f.filename, "gguf"))
+            .collect();
+
+        for pattern in &preferred {
+            if let Some(f) = gguf_files
+                .iter()
+                .find(|f| f.filename.to_uppercase().contains(pattern))
+            {
+                return Some(f.filename.as_str());
+            }
+        }
+
+        // Fall back to first GGUF file
+        gguf_files.first().map(|f| f.filename.as_str())
+    }
+
+    /// Estimate total safetensors weight size in bytes.
+    /// Returns 0 if no size info is available.
+    pub fn safetensors_size(&self) -> u64 {
         self.siblings
             .iter()
-            .find(|f| has_extension(&f.filename, "gguf"))
-            .map(|f| f.filename.as_str())
+            .filter(|f| has_extension(&f.filename, "safetensors"))
+            .filter_map(|f| f.size)
+            .sum()
+    }
+
+    /// Returns true if the model's safetensors weights are larger than the given threshold.
+    /// Useful for routing large models to quantized backends (GGUF/llama.cpp).
+    pub fn is_large_model(&self, threshold_bytes: u64) -> bool {
+        let size = self.safetensors_size();
+        // If we have size data and it exceeds the threshold
+        size > threshold_bytes
     }
 
     /// Infer the best backend based on available files and pipeline_tag.
     ///
     /// Returns (backend_str, onnx_file, gguf_file).
+    ///
+    /// Candle is only returned for tasks it actually supports:
+    /// - `text-generation` (decoder-only)
+    /// - `automatic-speech-recognition` (encoder-decoder, Whisper)
+    /// - `text-to-speech` (encoder-decoder, Parler TTS)
+    ///
+    /// For all other tasks, ONNX is preferred. If the model has safetensors
+    /// but no ONNX files for a non-Candle task, we return `"onnx"` with no
+    /// file — the caller (`run_with_model`) is responsible for searching for
+    /// an ONNX variant on HuggingFace.
     pub fn infer_backend(&self) -> (&str, Option<&str>, Option<&str>) {
         // GGUF files -> llama backend
         if self.has_gguf() {
             return ("llama", None, self.find_gguf_file());
         }
 
-        let is_text_gen = self
-            .pipeline_tag
-            .as_deref()
-            .is_some_and(|t| t == "text-generation");
+        let tag = self.pipeline_tag.as_deref().unwrap_or("");
+        let candle_supported = matches!(
+            tag,
+            "text-generation" | "automatic-speech-recognition" | "text-to-speech"
+        );
 
-        // Safetensors + text-generation -> candle
-        if is_text_gen && self.has_safetensors() {
+        // Safetensors + Candle-supported task -> candle
+        if candle_supported && self.has_safetensors() {
             return ("candle", None, None);
         }
 
-        // ONNX files -> onnx backend
+        // ONNX files -> onnx backend (works for any task)
         if self.has_onnx() {
             return ("onnx", self.find_onnx_file(), None);
         }
 
-        // Safetensors for non-text-gen -> still try candle
+        // Safetensors but task not supported by Candle -> need ONNX
+        // Return "onnx" so the caller knows to search for an ONNX variant.
         if self.has_safetensors() {
-            return ("candle", None, None);
+            return ("onnx", None, None);
         }
 
         // Default to auto
@@ -238,7 +291,7 @@ pub async fn search_models(task: &str, limit: usize) -> anyhow::Result<Vec<HfMod
 
 /// Fetch detailed model info from HuggingFace API.
 pub async fn get_model_info(model_id: &str) -> anyhow::Result<HfModelInfo> {
-    let url = format!("{HF_API_BASE}/{model_id}");
+    let url = format!("{HF_API_BASE}/{model_id}?blobs=true");
 
     let client = reqwest::Client::new();
     let resp = client
@@ -258,6 +311,102 @@ pub async fn get_model_info(model_id: &str) -> anyhow::Result<HfModelInfo> {
 
     let info: HfModelInfo = resp.json().await?;
     Ok(info)
+}
+
+/// Search for a GGUF variant of a model on HuggingFace.
+///
+/// Similar to [`find_compatible_variant`] but specifically looks for models
+/// with GGUF files, which are preferred for CPU inference of large models.
+pub async fn find_gguf_variant(model_id: &str) -> anyhow::Result<Option<HfModelInfo>> {
+    let model_name = urlencoded_model_name(model_id);
+    let base_tag = format!("base_model:{model_id}");
+    let client = reqwest::Client::new();
+
+    // Search for GGUF conversions — these often include "GGUF" in their name
+    let url = format!(
+        "{HF_API_BASE}?search={model_name}+GGUF&sort=downloads&direction=-1&limit=10",
+    );
+
+    let resp = client
+        .get(&url)
+        .header("User-Agent", "maiia-inference-service")
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+
+    let candidates: Vec<HfModelSummary> = resp.json().await?;
+
+    // Find the first candidate derived from this model that has GGUF files
+    for candidate in &candidates {
+        if candidate.id == model_id {
+            continue;
+        }
+        if candidate.tags.iter().any(|t| t == &base_tag) {
+            if let Ok(info) = get_model_info(&candidate.id).await {
+                if info.has_gguf() {
+                    return Ok(Some(info));
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+/// Search for a compatible variant of a model on HuggingFace.
+///
+/// Looks for models derived from `model_id` (via `base_model` tag) that have
+/// supported weight files (.onnx, .safetensors, .gguf), sorted by downloads.
+/// Returns the best match (if any).
+pub async fn find_compatible_variant(model_id: &str) -> anyhow::Result<Option<HfModelInfo>> {
+    let model_name = urlencoded_model_name(model_id);
+    let base_tag = format!("base_model:{model_id}");
+    let client = reqwest::Client::new();
+
+    // Search broadly — no tag filter so we catch ONNX, GGUF, and safetensors variants
+    let url = format!(
+        "{HF_API_BASE}?search={model_name}&sort=downloads&direction=-1&limit=10",
+    );
+
+    let resp = client
+        .get(&url)
+        .header("User-Agent", "maiia-inference-service")
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+
+    let candidates: Vec<HfModelSummary> = resp.json().await?;
+
+    // Find the first candidate derived from this model that has supported files
+    for candidate in &candidates {
+        // Skip the original model itself
+        if candidate.id == model_id {
+            continue;
+        }
+        if candidate.tags.iter().any(|t| t == &base_tag) {
+            if let Ok(info) = get_model_info(&candidate.id).await {
+                if info.has_supported_files() {
+                    return Ok(Some(info));
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+/// URL-encode only the slash in a model ID for search queries.
+fn urlencoded_model_name(model_id: &str) -> String {
+    // Extract just the model name part (after the org/) for better search results
+    model_id
+        .rsplit_once('/')
+        .map_or(model_id.to_string(), |(_, name)| name.to_string())
 }
 
 /// Format download count for display (e.g., 23551240 -> "23.6M").

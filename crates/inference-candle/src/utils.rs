@@ -23,10 +23,34 @@ use crate::error::{TaskError, TaskResult};
 
 /// Resolve a device type to a Candle device.
 ///
-/// Handles platform-specific device initialization with automatic CPU fallback
-/// when the requested device feature is not enabled **or** when the GPU
-/// hardware probe fails at runtime (e.g., feature compiled in but running in
-/// a VM without GPU access).
+/// Metal is auto-enabled on macOS via target-specific dependencies (no feature flag needed).
+/// CUDA requires explicit `--features cuda` on Linux/Windows.
+///
+/// If the feature is compiled in but hardware probe fails at runtime
+/// (e.g., running in a VM), falls back to CPU with a warning.
+///
+/// # Arguments
+///
+/// * `device_type` - The requested device type from configuration
+///
+/// # Returns
+///
+/// A Candle `Device` ready for tensor operations.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use inference_core::DeviceType;
+/// use inference_candle::resolve_device;
+///
+/// let device = resolve_device(&DeviceType::Metal)?;
+/// ```
+/// Resolve a device type to a Candle device.
+///
+/// Metal is auto-enabled on macOS via target-specific dependencies (no feature flag needed).
+/// CUDA requires explicit `--features cuda` on Linux/Windows.
+///
+/// If hardware probe fails at runtime (e.g., running in a VM), falls back to CPU with a warning.
 ///
 /// # Arguments
 ///
@@ -50,7 +74,8 @@ pub fn resolve_device(device_type: &DeviceType) -> TaskResult<Device> {
     match resolved {
         DeviceType::Cpu | DeviceType::Auto => Ok(Device::Cpu),
         DeviceType::Metal => {
-            #[cfg(feature = "candle-metal")]
+            // Metal is auto-compiled on macOS via target-specific deps in Cargo.toml
+            #[cfg(target_os = "macos")]
             {
                 match Device::new_metal(0) {
                     Ok(dev) => {
@@ -63,14 +88,14 @@ pub fn resolve_device(device_type: &DeviceType) -> TaskResult<Device> {
                     }
                 }
             }
-            #[cfg(not(feature = "candle-metal"))]
+            #[cfg(not(target_os = "macos"))]
             {
-                warn!("Metal requested but candle-metal feature not enabled, falling back to CPU");
+                debug!("Metal not available (macOS only)");
                 Ok(Device::Cpu)
             }
         }
         DeviceType::Cuda => {
-            #[cfg(feature = "candle-cuda")]
+            #[cfg(all(not(target_os = "macos"), feature = "cuda"))]
             {
                 match Device::new_cuda(0) {
                     Ok(dev) => {
@@ -83,9 +108,9 @@ pub fn resolve_device(device_type: &DeviceType) -> TaskResult<Device> {
                     }
                 }
             }
-            #[cfg(not(feature = "candle-cuda"))]
+            #[cfg(not(all(not(target_os = "macos"), feature = "cuda")))]
             {
-                warn!("CUDA requested but candle-cuda feature not enabled, falling back to CPU");
+                debug!("CUDA not available (build with --features all-cuda on Linux for GPU)");
                 Ok(Device::Cpu)
             }
         }
@@ -94,6 +119,35 @@ pub fn resolve_device(device_type: &DeviceType) -> TaskResult<Device> {
             warn!("Generic GPU resolved to CPU");
             Ok(Device::Cpu)
         }
+    }
+}
+
+/// Returns `true` if GPU acceleration is compiled into this build of `inference-candle`.
+///
+/// - macOS → `true` (Metal is auto-enabled via target-specific deps)
+/// - non-macOS + `cuda` feature → `true`
+/// - Otherwise → `false`
+///
+/// Use this to decide whether the effective runtime device is truly GPU or
+/// will silently fall back to CPU.
+#[must_use]
+pub fn is_gpu_compiled() -> bool {
+    cfg!(target_os = "macos") || cfg!(feature = "cuda")
+}
+
+/// Read the model's preferred dtype from `config.json` (`torch_dtype` field).
+///
+/// Returns `None` if the file can't be read or the field is missing/unrecognized.
+pub fn read_model_dtype(config_path: &Path) -> Option<DType> {
+    let content = std::fs::read_to_string(config_path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let torch_dtype = json.get("torch_dtype")?.as_str()?;
+
+    match torch_dtype {
+        "bfloat16" => Some(DType::BF16),
+        "float16" => Some(DType::F16),
+        "float32" => Some(DType::F32),
+        _ => None,
     }
 }
 
@@ -286,12 +340,74 @@ fn convert_safetensors_dtype(st_dtype: safetensors::Dtype, tensor_name: &str) ->
 ///
 /// If `cache_dtype_k` and `cache_dtype_v` differ, we pick the higher precision
 /// of the two to avoid dtype mismatches during attention computation.
-pub fn resolve_compute_dtype(kv_cache: &KvCacheConfig) -> DType {
+///
+/// `weight_size_bytes`: total size of weight files on disk. Used on CPU to decide
+/// whether F16 is safe (small models) or must be promoted to F32 (large models
+/// where F16 activations overflow, producing NaN).
+pub fn resolve_compute_dtype(
+    kv_cache: &KvCacheConfig,
+    model_dtype: Option<DType>,
+    device: &Device,
+    weight_size_bytes: u64,
+) -> DType {
+    let raw = resolve_compute_dtype_raw(kv_cache, model_dtype);
+
+    if matches!(device, Device::Cpu) {
+        // BF16 matmul is not supported on CPU at all
+        if raw == DType::BF16 {
+            // Large models: BF16 → F32 (F16 would overflow activations)
+            // Small models: BF16 → F16 (saves memory, activations stay in range)
+            const LARGE_WEIGHT_THRESHOLD: u64 = 2 * 1024 * 1024 * 1024; // 2 GB
+            if weight_size_bytes > LARGE_WEIGHT_THRESHOLD {
+                warn!(
+                    weight_mb = weight_size_bytes / (1024 * 1024),
+                    "Large model on CPU: using F32 instead of BF16/F16 \
+                     (F16 causes NaN overflow in large model activations). \
+                     For faster inference, use a GGUF model with the llama backend."
+                );
+                return DType::F32;
+            }
+            info!("BF16 not supported on CPU, using F16 instead (still half the memory of F32)");
+            return DType::F16;
+        }
+
+        // F16 on CPU: safe for small models, NaN-prone for large ones
+        if raw == DType::F16 {
+            const LARGE_WEIGHT_THRESHOLD: u64 = 2 * 1024 * 1024 * 1024;
+            if weight_size_bytes > LARGE_WEIGHT_THRESHOLD {
+                warn!(
+                    weight_mb = weight_size_bytes / (1024 * 1024),
+                    "Large model on CPU: using F32 instead of F16 \
+                     (F16 causes NaN overflow in large model activations). \
+                     For faster inference, use a GGUF model with the llama backend."
+                );
+                return DType::F32;
+            }
+        }
+    }
+
+    raw
+}
+
+/// Inner dtype resolution without device constraints.
+fn resolve_compute_dtype_raw(kv_cache: &KvCacheConfig, model_dtype: Option<DType>) -> DType {
     // Determine the target from both K and V preferences.
     // If they differ, pick the higher-precision one since Candle requires
     // uniform dtype across model + KV cache.
     let target = match (&kv_cache.cache_dtype_k, &kv_cache.cache_dtype_v) {
-        (None, None) => return DType::F32,
+        (None, None) => {
+            // No explicit KV cache dtype — use model's native dtype if available,
+            // otherwise F32. This respects the model's torch_dtype from config.json
+            // (e.g., bfloat16 for Qwen2.5, Llama 3.x) instead of always upscaling to F32.
+            let dtype = model_dtype.unwrap_or(DType::F32);
+            if dtype != DType::F32 {
+                info!(
+                    dtype = ?dtype,
+                    "Using model's native dtype (from config.json torch_dtype)"
+                );
+            }
+            return dtype;
+        }
         (Some(k), None) => *k,
         (None, Some(v)) => *v,
         (Some(k), Some(v)) if k == v => *k,
@@ -400,28 +516,89 @@ mod tests {
     #[test]
     fn test_resolve_compute_dtype_defaults_to_f32() {
         let kv = KvCacheConfig::default();
-        assert_eq!(resolve_compute_dtype(&kv), DType::F32);
+        assert_eq!(
+            resolve_compute_dtype(&kv, None, &Device::Cpu, 0),
+            DType::F32
+        );
+    }
+
+    #[test]
+    fn test_resolve_compute_dtype_uses_model_dtype() {
+        let kv = KvCacheConfig::default();
+        // BF16 model dtype gets downgraded to F16 on CPU (small model)
+        assert_eq!(
+            resolve_compute_dtype(&kv, Some(DType::BF16), &Device::Cpu, 0),
+            DType::F16
+        );
+        assert_eq!(
+            resolve_compute_dtype(&kv, Some(DType::F16), &Device::Cpu, 0),
+            DType::F16
+        );
+    }
+
+    #[test]
+    fn test_resolve_compute_dtype_large_model_forces_f32_on_cpu() {
+        let kv = KvCacheConfig::default();
+        let large = 3 * 1024 * 1024 * 1024; // 3 GB
+                                            // BF16 model + large weights on CPU → F32
+        assert_eq!(
+            resolve_compute_dtype(&kv, Some(DType::BF16), &Device::Cpu, large),
+            DType::F32
+        );
+        // F16 model + large weights on CPU → F32
+        assert_eq!(
+            resolve_compute_dtype(&kv, Some(DType::F16), &Device::Cpu, large),
+            DType::F32
+        );
+        // F32 model + large weights on CPU → F32 (already F32, no change)
+        assert_eq!(
+            resolve_compute_dtype(&kv, Some(DType::F32), &Device::Cpu, large),
+            DType::F32
+        );
+    }
+
+    #[test]
+    fn test_resolve_compute_dtype_kv_overrides_model_dtype() {
+        // Explicit KV cache dtype takes precedence over model dtype
+        let kv = KvCacheConfig::default().with_cache_dtype(CacheDType::F16);
+        assert_eq!(
+            resolve_compute_dtype(&kv, Some(DType::BF16), &Device::Cpu, 0),
+            DType::F16
+        );
     }
 
     #[test]
     fn test_resolve_compute_dtype_f16() {
         let kv = KvCacheConfig::default().with_cache_dtype(CacheDType::F16);
-        assert_eq!(resolve_compute_dtype(&kv), DType::F16);
+        assert_eq!(
+            resolve_compute_dtype(&kv, None, &Device::Cpu, 0),
+            DType::F16
+        );
     }
 
     #[test]
-    fn test_resolve_compute_dtype_bf16() {
+    fn test_resolve_compute_dtype_bf16_on_cpu_downgrades_to_f16() {
+        // Candle CPU backend doesn't support BF16 matmul (small model → F16)
         let kv = KvCacheConfig::default().with_cache_dtype(CacheDType::BF16);
-        assert_eq!(resolve_compute_dtype(&kv), DType::BF16);
+        assert_eq!(
+            resolve_compute_dtype(&kv, None, &Device::Cpu, 0),
+            DType::F16
+        );
     }
 
     #[test]
     fn test_resolve_compute_dtype_quantized_falls_back_to_f16() {
         let kv = KvCacheConfig::default().with_cache_dtype(CacheDType::Q8_0);
-        assert_eq!(resolve_compute_dtype(&kv), DType::F16);
+        assert_eq!(
+            resolve_compute_dtype(&kv, None, &Device::Cpu, 0),
+            DType::F16
+        );
 
         let kv = KvCacheConfig::default().with_cache_dtype(CacheDType::Q4_0);
-        assert_eq!(resolve_compute_dtype(&kv), DType::F16);
+        assert_eq!(
+            resolve_compute_dtype(&kv, None, &Device::Cpu, 0),
+            DType::F16
+        );
     }
 
     #[test]
@@ -430,23 +607,35 @@ mod tests {
         let kv = KvCacheConfig::default()
             .with_cache_dtype_k(CacheDType::F32)
             .with_cache_dtype_v(CacheDType::F16);
-        assert_eq!(resolve_compute_dtype(&kv), DType::F32);
+        assert_eq!(
+            resolve_compute_dtype(&kv, None, &Device::Cpu, 0),
+            DType::F32
+        );
 
         // K=F16, V=F32 -> should also pick F32
         let kv = KvCacheConfig::default()
             .with_cache_dtype_k(CacheDType::F16)
             .with_cache_dtype_v(CacheDType::F32);
-        assert_eq!(resolve_compute_dtype(&kv), DType::F32);
+        assert_eq!(
+            resolve_compute_dtype(&kv, None, &Device::Cpu, 0),
+            DType::F32
+        );
     }
 
     #[test]
     fn test_resolve_compute_dtype_single_side() {
         // Only K set
         let kv = KvCacheConfig::default().with_cache_dtype_k(CacheDType::F16);
-        assert_eq!(resolve_compute_dtype(&kv), DType::F16);
+        assert_eq!(
+            resolve_compute_dtype(&kv, None, &Device::Cpu, 0),
+            DType::F16
+        );
 
-        // Only V set
+        // Only V set — BF16 on CPU downgrades to F16 (small model)
         let kv = KvCacheConfig::default().with_cache_dtype_v(CacheDType::BF16);
-        assert_eq!(resolve_compute_dtype(&kv), DType::BF16);
+        assert_eq!(
+            resolve_compute_dtype(&kv, None, &Device::Cpu, 0),
+            DType::F16
+        );
     }
 }

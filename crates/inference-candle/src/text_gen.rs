@@ -280,12 +280,24 @@ impl CandleTextGenTask {
         // Build generation config first — we need kv_cache settings to pick dtype
         let gen_config = CandleGenConfig::from_config(config);
 
-        // Determine compute dtype from KV cache config.
+        // Calculate total weight size for dtype safety decisions
+        let weight_size_bytes: u64 = safetensors_files
+            .iter()
+            .filter_map(|p| std::fs::metadata(p).ok().map(|m| m.len()))
+            .sum();
+
+        // Determine compute dtype from KV cache config + model's native torch_dtype.
         // In Candle, KV cache dtype = model compute dtype (they can't differ).
-        // F16/BF16 halves memory for both model weights and KV cache.
-        // Q8_0/Q4_0 are not supported (falls back to F16 with a warning).
-        let dtype = utils::resolve_compute_dtype(&gen_config.kv_cache);
-        info!(dtype = ?dtype, "Compute dtype (controls weights + KV cache)");
+        // Using the model's native dtype (e.g., BF16 for Qwen2.5) instead of F32
+        // halves memory and is faster, especially on CPU.
+        let model_dtype = utils::read_model_dtype(&config_path);
+        let dtype = utils::resolve_compute_dtype(
+            &gen_config.kv_cache,
+            model_dtype,
+            &device,
+            weight_size_bytes,
+        );
+        info!(dtype = ?dtype, weight_mb = weight_size_bytes / (1024 * 1024), "Compute dtype (controls weights + KV cache)");
 
         // Load model weights using safe (non-mmap) loading
         let vb = utils::load_safetensors_safe(&safetensors_files, dtype, &device)?;
@@ -524,6 +536,32 @@ impl CandleTextGenTask {
                 .map_err(|e| TaskError::Inference(format!("Repeat penalty failed: {e}")))?
             };
 
+            // Ensure logits are F32 for numerically stable sampling.
+            // F16 logits from large models can overflow (max ~65504) causing NaN.
+            let logits = if logits.dtype() == candle_core::DType::F32 {
+                logits
+            } else {
+                logits
+                    .to_dtype(candle_core::DType::F32)
+                    .map_err(|e| TaskError::Inference(format!("Logits F32 cast failed: {e}")))?
+            };
+
+            // Detect NaN/Inf in logits on first step — gives a clear error instead of
+            // cryptic "weight is negative" from the sampler. Only checked once since
+            // if the first forward pass produces NaN, all subsequent ones will too.
+            if step == 0 {
+                if let Ok(vals) = logits.to_vec1::<f32>() {
+                    if vals.iter().any(|v| v.is_nan() || v.is_infinite()) {
+                        return Err(TaskError::Inference(
+                            "Model produced NaN/Inf logits — numerical overflow in forward pass. \
+                             Try using a GGUF quantized model with the llama backend for \
+                             reliable CPU inference of large models."
+                                .into(),
+                        ));
+                    }
+                }
+            }
+
             // Sample next token
             let next_token = logits_processor
                 .sample(&logits)
@@ -681,6 +719,32 @@ impl CandleTextGenTask {
                         }
                     }
                 };
+
+                // Ensure logits are F32 for numerically stable sampling.
+                let logits = match logits.dtype() {
+                    candle_core::DType::F32 => logits,
+                    _ => match logits.to_dtype(candle_core::DType::F32) {
+                        Ok(l) => l,
+                        Err(e) => {
+                            yield TaskChunk::error(format!("Logits F32 cast failed: {e}"));
+                            return;
+                        }
+                    },
+                };
+
+                // Detect NaN/Inf in logits on first step
+                if step == 0 {
+                    if let Ok(vals) = logits.to_vec1::<f32>() {
+                        if vals.iter().any(|v| v.is_nan() || v.is_infinite()) {
+                            yield TaskChunk::error(
+                                "Model produced NaN/Inf logits — numerical overflow in forward pass. \
+                                 Try using a GGUF quantized model with the llama backend."
+                                    .to_string(),
+                            );
+                            return;
+                        }
+                    }
+                }
 
                 // Sample next token
                 let next_token = match logits_processor.sample(&logits) {

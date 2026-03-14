@@ -9,7 +9,8 @@ workspace = true
 
 [features]
 default = []
-# Metal acceleration for macOS
+# Explicit Metal/CUDA features kept for backward compatibility and manual override.
+# On macOS, Metal is auto-enabled via target-specific deps below.
 metal = ["llama-cpp-2/metal"]
 # CUDA acceleration for Linux/Windows
 cuda = ["llama-cpp-2/cuda"]
@@ -25,7 +26,7 @@ serde_json.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 
-# llama.cpp Rust bindings
+# llama.cpp Rust bindings (CPU base)
 llama-cpp-2 = "0.1"
 
 # UTF-8 decoding for token output
@@ -36,6 +37,10 @@ rand = "0.8"
 
 # Async streams
 async-stream = "0.3"
+
+# --- Auto-enable Metal on macOS ---
+[target.'cfg(target_os = "macos")'.dependencies]
+llama-cpp-2 = { version = "0.1", features = ["metal"] }
 
 [dev-dependencies]
 tempfile = "3"
