@@ -28,18 +28,13 @@ type = "audio-text-to-text"
 name = "maiia.audio-llm.v1"
 
 [model]
-source = "huggingface"
 path = "onnx-community/whisper-base"
 encoder_file = "onnx/encoder_model.onnx"
 decoder_file = "onnx/decoder_model_merged.onnx"
 
 [inference]
-device = "cpu"
 max_tokens = 448
-num_threads = 4
 
 [service]
-grpc_port = 50051
-health_port = 8080
 name = "maiia-audio-llm-worker"
 enable_batching = false

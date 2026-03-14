@@ -28,18 +28,14 @@ type = "automatic-speech-recognition"
 name = "maiia.voxtral.v1"
 
 [model]
-source = "huggingface"
 path = "mistralai/Voxtral-Mini-3B-2507" # Native safetensors (requires HF token)
 
 [inference]
-backend = "candle" # Use Candle for native safetensors
-device = "gpu" # Use "metal" for Apple Silicon, "cuda" for NVIDIA
-num_threads = 4
-max_tokens = 512 # Max transcription length
-temperature = 0.0 # Greedy decoding
+backend = "candle"                        # Use Candle for native safetensors
+device = "gpu"                            # Use "metal" for Apple Silicon, "cuda" for NVIDIA
+max_tokens = 512                          # Max transcription length
+temperature = 0.0                         # Greedy decoding
 
 [service]
-grpc_port = 50051
-health_port = 8080
 name = "maiia-voxtral-worker"
-enable_batching = false # ASR typically processes one audio at a time
+enable_batching = false                   # ASR typically processes one audio at a time

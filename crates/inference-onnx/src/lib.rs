@@ -12,8 +12,10 @@
 //!
 //! - `preprocess` - Enable preprocessing (tokenization, image, audio)
 //! - `postprocess` - Enable postprocessing (decode tokens, format outputs)
-//! - `coreml` - Metal/CoreML support for macOS
 //! - `cuda` - CUDA support for Linux/Windows
+//!
+//! CoreML (`ort/coreml`) has been removed — it is unreliable for ONNX models.
+//! For GPU on macOS, use the Candle backend (direct Metal).
 
 mod clip;
 mod error;
@@ -28,10 +30,7 @@ pub use error::{TaskError, TaskResult};
 pub use onnx::{OnnxInput, OnnxOutput, OnnxTask};
 pub use paddle_ocr::{PaddleOcrInput, PaddleOcrOutput, PaddleOcrTask, TextBox};
 pub use seq2seq::{Seq2SeqInput, Seq2SeqOutput, Seq2SeqTask};
-pub use session::{
-    load_session_for_seq2seq, load_session_for_seq2seq_from_bytes, load_session_from_bytes,
-    load_session_from_file,
-};
+pub use session::{load_session_from_bytes, load_session_from_file};
 pub use tensor_utils::{
     array_f32_to_json, array_i64_to_json, contains_floats, infer_shape, json_to_array2_i64,
     json_to_array_f32, json_to_array_i64, json_to_tensor_value, TensorValue,

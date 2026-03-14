@@ -2,15 +2,16 @@
 # =============================================================================
 # Test All Model Configs
 # =============================================================================
-# This script tests each config by:
-# 1. Killing any existing server
-# 2. Starting the server with the config
-# 3. Waiting for gRPC to be ready
-# 4. Sending a test request
-# 5. Recording success/failure
-# 6. Killing the server before next test
+# Tests each config preset by:
+# 1. Starting the server with --config <path>
+# 2. Waiting for gRPC to be ready
+# 3. Sending a test request
+# 4. Recording success/failure
 #
-# Usage: ./scripts/test-all-configs.sh [--quick] [--foundation-only] [--nlp-only] [--audio-only] [--vision-only] [--multimodal-only] [--quiet]
+# Usage:
+#   ./scripts/test-all-configs.sh [--quick] [--foundation-only] [--nlp-only]
+#                                 [--audio-only] [--vision-only] [--multimodal-only]
+#                                 [--quiet]
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,7 +30,6 @@ GRPC_PORT=50051
 STARTUP_TIMEOUT=320
 
 # Skip these configs (known blockers)
-# All multimodal configs now have working ONNX models
 SKIP_CONFIGS=""
 
 # Results
@@ -63,7 +63,6 @@ done
 kill_server() {
     pkill -9 -f "inference-service" 2>/dev/null || true
     sleep 2
-    # Double check port is free
     while lsof -i :${GRPC_PORT} >/dev/null 2>&1; do
         echo "  Waiting for port ${GRPC_PORT} to be free..."
         pkill -9 -f "inference-service" 2>/dev/null || true
@@ -126,12 +125,9 @@ wait_for_ready() {
     local elapsed=0
 
     while [ $elapsed -lt $timeout ]; do
-        # Check if server process is still running
         if ! kill -0 "$pid" 2>/dev/null; then
-            # Process died
             return 2
         fi
-
         if grpcurl -plaintext 127.0.0.1:${GRPC_PORT} list 2>/dev/null | grep -q "maiia.worker"; then
             return 0
         fi
@@ -153,7 +149,6 @@ test_one_config() {
     echo -e "${BLUE}Testing: ${display_name}${NC}"
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-    # Check if config should be skipped (exact match with space delimiters)
     if echo " $SKIP_CONFIGS " | grep -q " $config_name "; then
         echo -e "  ${YELLOW}SKIPPED${NC} - not yet implemented"
         SKIPPED=$((SKIPPED + 1))
@@ -161,7 +156,6 @@ test_one_config() {
         return 0
     fi
 
-    # Get task info
     local task_type=$(get_task_type "$config")
     local task_name=$(get_task_name "$config")
 
@@ -172,18 +166,15 @@ test_one_config() {
     echo "  [1/4] Killing existing servers..."
     kill_server
 
-    # Step 2: Start server
+    # Step 2: Start server using the CLI --config flag
     echo "  [2/4] Starting server..."
     local log_file="/tmp/server_${config_name}.log"
 
     if [ "$VERBOSE" = true ]; then
-        # Verbose mode (default): show output in real-time
-        # Note: Progress bars may not render perfectly when piped, but output is visible
-        MAIIA_AI_CONFIG_PATH="$config" RUST_LOG=info ./target/release/inference-service 2>&1 | tee "$log_file" &
-        sleep 0.5  # Give tee time to start
+        RUST_LOG=info ./target/release/inference-service --config "$config" 2>&1 | tee "$log_file" &
+        sleep 0.5
     else
-        # Quiet mode: redirect to log file only
-        MAIIA_AI_CONFIG_PATH="$config" RUST_LOG=info ./target/release/inference-service > "$log_file" 2>&1 &
+        RUST_LOG=info ./target/release/inference-service --config "$config" > "$log_file" 2>&1 &
     fi
     local server_pid=$!
     echo "  Server PID: $server_pid"
@@ -221,10 +212,8 @@ test_one_config() {
         -d "{\"task_name\":\"${task_name}\",\"payload\":${escaped_payload},\"request_id\":\"test-$$\"}" \
         127.0.0.1:${GRPC_PORT} maiia.worker.v1.WorkerService/ExecuteTask 2>&1)
 
-    # Check result
     if echo "$response" | jq -e '.success == true' > /dev/null 2>&1; then
         local duration=$(echo "$response" | jq -r '.durationMs // "?"')
-        # Show the execution log line
         grep -E "Task completed|execute_task" "$log_file" 2>/dev/null | tail -1 | sed 's/^/  /'
         echo -e "  ${GREEN}PASSED${NC} - ${duration}ms"
         PASSED=$((PASSED + 1))
@@ -239,7 +228,6 @@ test_one_config() {
         FAILED_LIST="${FAILED_LIST}\n  - ${display_name}: ${error}"
     fi
 
-    # Always cleanup
     kill_server
     return 0
 }
@@ -254,15 +242,14 @@ echo "║              Model Config Test Suite                             ║"
 echo "╚══════════════════════════════════════════════════════════════════╝"
 echo -e "${NC}"
 
-# Initial cleanup
 echo -e "${YELLOW}Initial cleanup...${NC}"
 kill_server
 
 # Detect platform and set GPU build features
 BUILD_FEATURES=""
 if [[ "$(uname)" == "Darwin" ]]; then
-    echo -e "${YELLOW}Detected macOS - enabling CoreML/Metal acceleration + Candle + Llama${NC}"
-    BUILD_FEATURES="--features coreml,candle-metal,llama"
+    echo -e "${YELLOW}Detected macOS - enabling Metal (Candle) + Llama${NC}"
+    BUILD_FEATURES="--features candle-metal,llama"
 elif command -v nvidia-smi &> /dev/null; then
     echo -e "${YELLOW}Detected NVIDIA GPU - enabling CUDA acceleration + Candle + Llama${NC}"
     BUILD_FEATURES="--features cuda,candle-cuda,llama"
@@ -271,7 +258,6 @@ else
     BUILD_FEATURES="--features candle,llama"
 fi
 
-# Build
 echo -e "${YELLOW}Building release binary...${NC}"
 cargo build --release $BUILD_FEATURES
 
@@ -299,14 +285,12 @@ fi
 
 echo -e "${YELLOW}Will test ${#configs[@]} configs${NC}"
 
-# Test each config ONE BY ONE
 for config in "${configs[@]}"; do
     if [ -f "$config" ]; then
         test_one_config "$config"
     fi
 done
 
-# Final cleanup
 kill_server
 
 # =============================================================================
@@ -340,5 +324,4 @@ echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━�
 echo -e "Total: ${GREEN}${PASSED} passed${NC}, ${RED}${FAILED} failed${NC}, ${YELLOW}${SKIPPED} skipped${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-# Exit code
 [ $FAILED -eq 0 ]

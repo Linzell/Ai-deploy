@@ -29,17 +29,13 @@ type = "image-text-to-text"
 name = "maiia.vlm.v1"
 
 [model]
-source = "huggingface"
 path = "onnx-community/Florence-2-base-ft"
 # Note: onnx_file is not used for seq2seq tasks - encoder/decoder discovery is automatic
 
 [inference]
 device = "gpu"
 max_tokens = 512
-num_threads = 4
 
 [service]
-grpc_port = 50051
-health_port = 8080
 name = "maiia-vlm-worker"
-enable_batching = false                  # Autoregressive generation
+enable_batching = false                   # Autoregressive generation

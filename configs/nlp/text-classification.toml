@@ -5,42 +5,23 @@
 #   grpcurl -plaintext -d '{"task_name":"maiia.text-classification.v1","payload":"{\"text\":\"I love this movie!\"}","request_id":"1"}' \
 #     127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
 #
-# Batch test:
-#   grpcurl -plaintext -d '{"task_name":"maiia.text-classification.v1","payload":"{\"text\":[\"I love this!\",\"This is terrible.\"]}","request_id":"1"}' \
-#     127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
-# 
 # Classifies text into predefined categories (sentiment, topic, intent, etc.)
-# Popular models: distilbert-base-uncased-finetuned-sst-2, roberta-base-sentiment
 #
-# ONNX models on HuggingFace:
-#   - Xenova/distilbert-base-uncased-finetuned-sst-2-onnx
-#   - optimum/distilbert-base-uncased-finetuned-sst-2
-#   - Xenova/toxic-bert
-#
-# Input format (from LangChain - service handles tokenization):
+# Input format:
 #   {"text": "I love this movie!"}
 #   {"text": ["text 1", "text 2"]}
 #
 # Output format:
-#   {"outputs": {"logits": [[0.1, 0.9]]}}  # One score per class
+#   {"outputs": {"logits": [[0.1, 0.9]]}}
 
 [task]
 type = "text-classification"
 name = "maiia.text-classification.v1"
 
 [model]
-source = "huggingface"
 path = "Xenova/distilbert-base-uncased-finetuned-sst-2-english"
 onnx_file = "onnx/model.onnx"
 
-[inference]
-device = "cpu"
-num_threads = 4
-
 [service]
-grpc_port = 50051
-health_port = 8080
 name = "maiia-text-classification-worker"
-enable_batching = true
-max_batch_size = 32
 batch_timeout_ms = 50

@@ -17,6 +17,11 @@
 #
 # Run:
 #   docker run --env-file .env inference-service
+#
+# Run with CLI args (new):
+#   docker run inference-service --model Qwen/Qwen2.5-0.5B-Instruct
+#   docker run inference-service --task text-generation
+#   docker run inference-service --config /config/task.toml
 
 # -----------------------------------------------------------------------------
 # Stage 1: Builder
@@ -50,11 +55,15 @@ RUN if [ -z "$FEATURES" ]; then \
 # -----------------------------------------------------------------------------
 FROM debian:trixie-slim AS runtime
 
-# Install runtime dependencies
+# Install runtime dependencies + grpc_health_probe for container health checks
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
     && rm -rf /var/lib/apt/lists/*
+
+# Install grpc_health_probe (static binary)
+ADD https://github.com/grpc-ecosystem/grpc-health-probe/releases/download/v0.4.37/grpc_health_probe-linux-amd64 /bin/grpc_health_probe
+RUN chmod +x /bin/grpc_health_probe
 
 # Create non-root user
 RUN useradd -m -u 1000 inference
@@ -67,16 +76,15 @@ COPY --from=builder /app/target/release/inference-service /app/inference-service
 
 # Default environment variables
 ENV MAIIA_AI_GRPC_PORT=50051
-ENV MAIIA_AI_HEALTH_PORT=8080
 ENV MAIIA_AI_CACHE_DIR=/tmp/inference-cache
 ENV RUST_LOG=info
 
-# Expose ports
-EXPOSE 50051 8080
+# Expose gRPC port
+EXPOSE 50051
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
+# Health check via gRPC health protocol (matches our HealthServiceImpl)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD ["/bin/grpc_health_probe", "-addr=:50051"]
 
-# Run the service
-CMD ["./inference-service"]
+# Run the service (ENTRYPOINT so `docker run <image> --model foo` works)
+ENTRYPOINT ["./inference-service"]

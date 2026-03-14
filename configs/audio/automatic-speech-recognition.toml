@@ -32,19 +32,15 @@ type = "automatic-speech-recognition"
 name = "maiia.asr.v1"
 
 [model]
-source = "huggingface"
 path = "openai/whisper-base"              # Native safetensors model
 # For quantized: path = "ggerganov/whisper.cpp", gguf_file = "ggml-base.bin"
 
 [inference]
 backend = "candle"                        # Use Candle (ONNX Whisper has broken KV-cache)
-device = "cpu"                            # Use "metal" for Apple Silicon, "cuda" for NVIDIA
-num_threads = 4
+# device = "cpu" (default) — use "metal" for Apple Silicon, "cuda" for NVIDIA
 max_tokens = 256                          # Max transcription length
 temperature = 0.0                         # Greedy decoding (0.0) or sampling (>0)
 
 [service]
-grpc_port = 50051
-health_port = 8080
 name = "maiia-asr-worker"
 enable_batching = false                   # Audio typically processed one at a time

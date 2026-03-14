@@ -32,21 +32,14 @@ type = "ocr"
 name = "maiia.ocr.v1"
 
 [model]
-source = "huggingface"
 path = "monkt/paddleocr-onnx"
 # PaddleOCR has multiple ONNX files - detection and recognition
 # The task implementation should handle loading both models
-onnx_file = "det_model.onnx"  # Detection model (also needs rec_model.onnx)
+onnx_file = "det_model.onnx"             # Detection model (also needs rec_model.onnx)
 
 [inference]
 backend = "onnx"
-device = "cpu"
-num_threads = 4
 
 [service]
-grpc_port = 50051
-health_port = 8080
 name = "maiia-ocr-worker"
-enable_batching = true
 max_batch_size = 8
-batch_timeout_ms = 100

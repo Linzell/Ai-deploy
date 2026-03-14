@@ -33,18 +33,9 @@ type = "image-feature-extraction"
 name = "maiia.image-feature-extraction.v1"
 
 [model]
-source = "huggingface"
 path = "Xenova/dinov2-small"
 onnx_file = "onnx/model.onnx"
 
-[inference]
-device = "cpu"
-num_threads = 4
-
 [service]
-grpc_port = 50051
-health_port = 8080
 name = "maiia-image-feature-extraction-worker"
-enable_batching = true
-max_batch_size = 32
 batch_timeout_ms = 50

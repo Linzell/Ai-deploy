@@ -28,11 +28,13 @@
 //! server.serve().await?;
 //! ```
 
+pub mod batcher;
 pub mod generated;
 pub mod health;
 pub mod server;
 pub mod task;
 pub mod worker;
 
+pub use batcher::BatchHandle;
 pub use server::WorkerServer;
 pub use task::Task;

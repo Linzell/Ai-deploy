@@ -4,16 +4,10 @@
 # Test with question + context (service handles tokenization):
 #   grpcurl -plaintext -d '{"task_name":"maiia.question-answering.v1","payload":"{\"question\":\"What is the capital of France?\",\"context\":\"Paris is the capital of France.\"}","request_id":"1"}' \
 #     127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
-# 
+#
 # Extracts answer spans from context given a question.
-# Popular models: distilbert-base-cased-distilled-squad, bert-large-uncased-whole-word-masking-finetuned-squad
 #
-# ONNX models on HuggingFace:
-#   - Xenova/distilbert-base-cased-distilled-squad
-#   - optimum/roberta-base-squad2
-#   - Xenova/bert-base-multilingual-cased-finetuned-squad
-#
-# Input format (from LangChain - service handles tokenization):
+# Input format:
 #   {"question": "What is AI?", "context": "AI stands for artificial intelligence."}
 #
 # Output format:
@@ -24,18 +18,9 @@ type = "question-answering"
 name = "maiia.question-answering.v1"
 
 [model]
-source = "huggingface"
 path = "Xenova/distilbert-base-cased-distilled-squad"
 onnx_file = "onnx/model.onnx"
 
-[inference]
-device = "cpu"
-num_threads = 4
-
 [service]
-grpc_port = 50051
-health_port = 8080
 name = "maiia-qa-worker"
-enable_batching = true
 max_batch_size = 16
-batch_timeout_ms = 100

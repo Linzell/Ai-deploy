@@ -11,8 +11,9 @@ pub mod model;
 pub mod task;
 
 pub use config::{
-    BackendType, Config, DataSourceType, DeviceType, HuggingFaceConfig, InferenceConfig,
-    ModelConfig, S3Config, ServiceConfig, TaskConfig, TaskType, TomlConfig, ENV_PREFIX,
+    auto_detect_device, BackendType, Config, DataSourceType, DeviceType, HuggingFaceConfig,
+    InferenceConfig, ModelConfig, S3Config, ServiceConfig, TaskConfig, TaskType, TomlConfig,
+    ENV_PREFIX,
 };
 pub use error::{Error, Result, TaskResult};
 pub use generation::{CacheDType, GenerationConfig, KvCacheConfig, ModelArchitecture};

@@ -9,14 +9,6 @@
 type = "echo"
 name = "maiia.echo.v1"
 
-[model]
-# No model needed for echo task
-
-[inference]
-device = "cpu"
-
 [service]
-grpc_port = 50051
-health_port = 8080
 name = "maiia-echo-worker"
 enable_batching = false

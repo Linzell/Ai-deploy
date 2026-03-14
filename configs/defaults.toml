@@ -1,0 +1,30 @@
+# =============================================================================
+# Default configuration for all inference models
+# =============================================================================
+#
+# This file contains shared defaults applied BEFORE the model-specific config.
+# Model configs only need to specify values that differ from these defaults.
+#
+# Load order:
+#   1. Config::default() (hardcoded Rust defaults)
+#   2. configs/defaults.toml (this file)
+#   3. Model-specific TOML (e.g., configs/nlp/text-classification.toml)
+#   4. Environment variables (MAIIA_AI_* prefix)
+#
+# To override a default for a specific model, just set it in the model config.
+
+[model]
+source = "huggingface"
+
+[inference]
+# device is intentionally omitted — auto-detected at runtime (GPU if available, else CPU).
+# Set device = "cpu" / "metal" / "cuda" here or via MAIIA_AI_DEVICE to override.
+num_threads = 4
+
+[service]
+grpc_port = 50051
+health_port = 8080
+name = "maiia-ai-worker"
+enable_batching = true
+max_batch_size = 32
+batch_timeout_ms = 100

@@ -4,17 +4,10 @@
 # Test with raw text (service handles tokenization):
 #   grpcurl -plaintext -d '{"task_name":"maiia.translation.v1","payload":"{\"text\":\"Hello, how are you today?\"}","request_id":"1"}' \
 #     127.0.0.1:50051 maiia.worker.v1.WorkerService/ExecuteTask
-# 
+#
 # Translates text between languages.
-# Popular models: Helsinki-NLP/opus-mt-*, facebook/mbart-large-50-*
 #
-# ONNX models on HuggingFace:
-#   - Xenova/opus-mt-en-fr (English to French)
-#   - Xenova/opus-mt-fr-en (French to English)
-#   - Xenova/nllb-200-distilled-600M (200 languages)
-#   - Xenova/m2m100_418M (multilingual)
-#
-# Input format (from LangChain - service handles tokenization):
+# Input format:
 #   {"text": "Hello, how are you?"}
 #
 # Output format:
@@ -25,19 +18,12 @@ type = "translation"
 name = "maiia.translation.v1"
 
 [model]
-source = "huggingface"
-path = "Xenova/t5-small"                  # T5 for translation (use prompt: "translate English to French: ...")
+path = "Xenova/t5-small"
 onnx_file = "onnx/encoder_model.onnx"
 
 [inference]
-device = "cpu"
 max_tokens = 512
-num_threads = 4
 
 [service]
-grpc_port = 50051
-health_port = 8080
 name = "maiia-translation-worker"
-enable_batching = true
 max_batch_size = 16
-batch_timeout_ms = 100

@@ -35,13 +35,13 @@ candle-nn.workspace = true
 candle-transformers.workspace = true
 
 # Tokenizers
-tokenizers = "0.21"
+tokenizers = "0.22"
 
 # Tekken tokenizer for Voxtral
 tekken-rs = "0.1"
 
 # Safetensors parsing (for safe loading)
-safetensors = "0.4"
+safetensors = "0.7"
 
 # Random number generation
 rand = "0.8"

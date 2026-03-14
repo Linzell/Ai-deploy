@@ -32,18 +32,9 @@ type = "image-classification"
 name = "maiia.image-classification.v1"
 
 [model]
-source = "huggingface"
 path = "Xenova/vit-base-patch16-224"
 onnx_file = "onnx/model.onnx"
 
-[inference]
-device = "cpu"
-num_threads = 4
-
 [service]
-grpc_port = 50051
-health_port = 8080
 name = "maiia-image-classification-worker"
-enable_batching = true
 max_batch_size = 16
-batch_timeout_ms = 100

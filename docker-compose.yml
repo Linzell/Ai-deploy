@@ -2,21 +2,21 @@
 # Docker Compose for Maiia AI Inference Service
 # ============================================================================
 #
-# Backends: ONNX (default), Candle (Rust-native LLMs), llama.cpp (GGUF models)
-#
 # Usage:
-#   docker compose up                    # Start with echo task (default, ONNX only)
-#   docker compose up -d                 # Start in background
+#   docker compose up                              # Start echo task (default)
+#   docker compose up -d                           # Start in background
 #
-# Run specific task:
-#   TASK_CONFIG=nlp/feature-extraction.toml docker compose up
-#   TASK_CONFIG=audio/automatic-speech-recognition.toml docker compose up
-#   TASK_CONFIG=vision/image-classification.toml docker compose up
+# Run a specific model (no TOML config needed):
+#   MODEL=Xenova/bge-m3 docker compose up
+#   MODEL=Qwen/Qwen2.5-0.5B-Instruct docker compose up
+#
+# Run from a TOML preset:
+#   CONFIG=configs/foundation/bge-m3.toml docker compose up
 #
 # Build with optional backends:
-#   FEATURES=candle docker compose up --build          # Enable Candle backend
-#   FEATURES=llama docker compose up --build           # Enable llama.cpp backend
-#   FEATURES="candle,llama" docker compose up --build  # Enable all backends
+#   FEATURES=candle docker compose up --build
+#   FEATURES=llama docker compose up --build
+#   FEATURES="candle,llama" docker compose up --build
 #
 # ============================================================================
 
@@ -32,17 +32,20 @@ services:
         - FEATURES=${FEATURES:-}
     ports:
       - "50051:50051"  # gRPC
-      - "8080:8080"    # Health check
     environment:
       - RUST_LOG=${RUST_LOG:-info}
-      - MAIIA_AI_CONFIG_PATH=/app/configs/${TASK_CONFIG:-echo.toml}
       # S3/MinIO configuration (optional)
       - AWS_ENDPOINT_URL=http://minio:9000
       - AWS_ACCESS_KEY_ID=minioadmin
       - AWS_SECRET_ACCESS_KEY=minioadmin
       - AWS_REGION=us-east-1
+    # Default: run echo task. Override with MODEL or CONFIG env vars.
+    # Examples:
+    #   MODEL=Xenova/bge-m3 docker compose up
+    #   CONFIG=configs/foundation/bge-m3.toml docker compose up
+    command: ${MODEL:+--model ${MODEL}} ${CONFIG:+--config /app/${CONFIG}} ${MODEL:-${CONFIG:---config /app/configs/echo.toml}}
     volumes:
-      # Mount all config directories
+      # Mount config presets (for --config mode)
       - ./configs:/app/configs:ro
       # Mount models directory (for local models)
       - ./models:/app/models:ro
@@ -52,10 +55,10 @@ services:
       minio:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      test: ["/bin/grpc_health_probe", "-addr=:50051"]
       interval: 30s
       timeout: 10s
-      start_period: 10s
+      start_period: 30s
       retries: 3
     # Uncomment for GPU support (NVIDIA)
     # deploy:

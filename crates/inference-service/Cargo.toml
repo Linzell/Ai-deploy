@@ -10,7 +10,7 @@ workspace = true
 [features]
 default = []
 # Metal/CoreML support for macOS (Apple Silicon)
-coreml = ["inference-tasks/coreml"]
+
 # CUDA support for Linux/Windows (NVIDIA GPU)
 cuda = ["inference-tasks/cuda"]
 # Candle backend for text-generation (Rust-native ML)
@@ -19,6 +19,10 @@ candle-metal = ["inference-tasks/candle-metal"]
 candle-cuda = ["inference-tasks/candle-cuda"]
 # Llama.cpp backend for GGUF models (GPT-OSS-20B, etc.)
 llama = ["inference-tasks/llama"]
+llama-metal = ["inference-tasks/llama-metal"]
+llama-cuda = ["inference-tasks/llama-cuda"]
+# TLS support for gRPC server
+tls = ["inference-grpc/tls"]
 
 [[bin]]
 name = "inference-service"
@@ -44,6 +48,12 @@ tracing-subscriber.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# HTTP client (for HuggingFace API)
+reqwest = { version = "0.12", features = ["json"] }
+
 # Error handling
 anyhow.workspace = true
 
@@ -53,3 +63,9 @@ tonic.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 base64 = "0.22"
+criterion = { version = "0.5", features = ["async_tokio"] }
+futures.workspace = true
+
+[[bench]]
+name = "inference_bench"
+harness = false

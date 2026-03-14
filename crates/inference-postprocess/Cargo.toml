@@ -29,7 +29,7 @@ thiserror.workspace = true
 tracing.workspace = true
 
 # Tokenizers for decoding (shared with preprocess)
-tokenizers = { version = "0.21", optional = true }
+tokenizers = { version = "0.22", optional = true }
 
 # Math operations
 ndarray = "0.17"

@@ -24,7 +24,9 @@ use crate::error::{TaskError, TaskResult};
 /// Resolve a device type to a Candle device.
 ///
 /// Handles platform-specific device initialization with automatic CPU fallback
-/// when the requested device feature is not enabled.
+/// when the requested device feature is not enabled **or** when the GPU
+/// hardware probe fails at runtime (e.g., feature compiled in but running in
+/// a VM without GPU access).
 ///
 /// # Arguments
 ///
@@ -46,12 +48,20 @@ pub fn resolve_device(device_type: &DeviceType) -> TaskResult<Device> {
     let resolved = device_type.resolve();
 
     match resolved {
-        DeviceType::Cpu => Ok(Device::Cpu),
+        DeviceType::Cpu | DeviceType::Auto => Ok(Device::Cpu),
         DeviceType::Metal => {
             #[cfg(feature = "candle-metal")]
             {
-                Device::new_metal(0)
-                    .map_err(|e| TaskError::Config(format!("Metal device error: {e}")))
+                match Device::new_metal(0) {
+                    Ok(dev) => {
+                        info!("Using Metal GPU device");
+                        Ok(dev)
+                    }
+                    Err(e) => {
+                        warn!("Metal device probe failed ({e}), falling back to CPU");
+                        Ok(Device::Cpu)
+                    }
+                }
             }
             #[cfg(not(feature = "candle-metal"))]
             {
@@ -62,8 +72,16 @@ pub fn resolve_device(device_type: &DeviceType) -> TaskResult<Device> {
         DeviceType::Cuda => {
             #[cfg(feature = "candle-cuda")]
             {
-                Device::new_cuda(0)
-                    .map_err(|e| TaskError::Config(format!("CUDA device error: {e}")))
+                match Device::new_cuda(0) {
+                    Ok(dev) => {
+                        info!("Using CUDA GPU device");
+                        Ok(dev)
+                    }
+                    Err(e) => {
+                        warn!("CUDA device probe failed ({e}), falling back to CPU");
+                        Ok(Device::Cpu)
+                    }
+                }
             }
             #[cfg(not(feature = "candle-cuda"))]
             {

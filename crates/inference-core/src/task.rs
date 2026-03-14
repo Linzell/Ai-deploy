@@ -171,4 +171,35 @@ pub trait Task: Send + Sync {
     fn is_ready(&self) -> bool {
         true
     }
+
+    /// Execute a batch of requests.
+    ///
+    /// Default implementation calls `execute` sequentially for each item.
+    /// Override this for backends that support true batch inference (e.g., ONNX
+    /// embedding/classification models where multiple inputs can be stacked
+    /// into a single forward pass).
+    ///
+    /// # Arguments
+    ///
+    /// * `payloads` - Slice of (payload_json, request_id) pairs
+    ///
+    /// # Returns
+    ///
+    /// Vec of `TaskResult`, one per input, in the same order.
+    async fn execute_batch(&self, payloads: &[(&str, &str)]) -> Vec<TaskResult> {
+        let mut results = Vec::with_capacity(payloads.len());
+        for (payload, request_id) in payloads {
+            results.push(self.execute(payload, request_id).await);
+        }
+        results
+    }
+
+    /// Whether this task supports efficient batch execution.
+    ///
+    /// If true, the batching middleware will collect multiple requests
+    /// and call `execute_batch`. If false, batching middleware will still
+    /// work but will just call `execute` sequentially (no benefit).
+    fn supports_batching(&self) -> bool {
+        false
+    }
 }
