@@ -771,13 +771,13 @@ mod tests {
         let mut samples = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         normalize_audio(&mut samples);
         // Mean should be ~0
-        let mean: f64 = samples.iter().map(|&s| s as f64).sum::<f64>() / samples.len() as f64;
+        let mean: f64 = samples.iter().map(|&s| f64::from(s)).sum::<f64>() / samples.len() as f64;
         assert!(mean.abs() < 1e-5);
         // Std should be ~1
         let var: f64 = samples
             .iter()
             .map(|&s| {
-                let d = s as f64 - mean;
+                let d = f64::from(s) - mean;
                 d * d
             })
             .sum::<f64>()
@@ -797,7 +797,7 @@ mod tests {
         let samples: Vec<f32> = (0..32000).map(|i| (i as f32) / 32000.0).collect();
         let out = resample(&samples, 32000, 16000);
         // Should be roughly half the length
-        assert!((out.len() as i64 - 16000).abs() < 2);
+        assert!(out.len().abs_diff(16000) < 2);
     }
 
     #[test]

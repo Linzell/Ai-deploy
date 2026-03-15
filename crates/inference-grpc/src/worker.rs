@@ -26,6 +26,7 @@ use crate::batcher::BatchHandle;
 use crate::generated::worker_pb::{
     worker_service_server::WorkerService, TaskChunk as ProtoTaskChunk, TaskRequest, TaskResponse,
 };
+use crate::metrics;
 use crate::task::Task;
 
 /// WorkerService implementation that routes requests to a Task.
@@ -177,9 +178,17 @@ impl WorkerService for WorkerServiceImpl {
         #[allow(clippy::cast_possible_truncation)]
         let duration_ms = start.elapsed().as_millis() as i64;
 
+        // --- OTel metrics (no-op when OTEL_ENDPOINT is not set) ---
+        let m = metrics::metrics();
+        let attrs = &[opentelemetry::KeyValue::new("task", task_name.clone())];
+        m.request_count.add(1, attrs);
+        #[allow(clippy::cast_precision_loss)]
+        m.request_duration_ms.record(duration_ms as f64, attrs);
+
         if result.success {
             info!("[{}] Task completed in {}ms", request_id, duration_ms);
         } else {
+            m.error_count.add(1, attrs);
             error!(
                 "[{}] Task failed: {}",
                 request_id,
@@ -236,6 +245,7 @@ impl WorkerService for WorkerServiceImpl {
         let task = Arc::clone(&self.task);
         let payload = req.payload.clone();
         let rid = request_id.clone();
+        let stream_task_name = task_name.clone();
 
         let stream = async_stream::stream! {
             let mut task_stream = task.execute_stream(&payload, &rid).await;
@@ -250,6 +260,13 @@ impl WorkerService for WorkerServiceImpl {
 
             let duration_ms = start.elapsed().as_millis();
             info!("[{}] StreamTask completed in {}ms", rid, duration_ms);
+
+            // OTel metrics (no-op when OTEL_ENDPOINT is not set)
+            let m = metrics::metrics();
+            let attrs = &[opentelemetry::KeyValue::new("task", stream_task_name)];
+            m.request_count.add(1, attrs);
+            #[allow(clippy::cast_precision_loss)]
+            m.request_duration_ms.record(duration_ms as f64, attrs);
         };
 
         Ok(Response::new(Box::pin(stream)))

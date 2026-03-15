@@ -730,7 +730,7 @@ mod tests {
         assert_eq!(idx.len(), 64 * 64);
         // All indices should be in [0, (2*8-1)*(2*8-1))
         let max_idx = (2 * 8 - 1) * (2 * 8 - 1);
-        assert!(idx.iter().all(|&v| v >= 0 && v < max_idx as i64));
+        assert!(idx.iter().all(|&v| v >= 0 && v < i64::from(max_idx)));
     }
 
     #[test]

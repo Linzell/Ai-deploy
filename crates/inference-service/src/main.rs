@@ -34,6 +34,8 @@
 mod cli;
 mod hf_api;
 mod interactive;
+mod system_metrics;
+mod telemetry;
 
 use clap::Parser;
 use cli::{Cli, CliMode};
@@ -46,6 +48,9 @@ use tracing_subscriber::fmt;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Load .env file if present (before anything reads env vars)
+    let _ = dotenvy::dotenv();
+
     let cli = Cli::parse();
 
     match cli.mode() {
@@ -381,6 +386,11 @@ async fn start_server(config: Config) -> anyhow::Result<()> {
         return Err(e.into());
     }
 
+    // --- OpenTelemetry (env-gated) ---
+    // Initialize OTel if OTEL_ENDPOINT is set. The guard must stay alive
+    // for the lifetime of the process; it is shut down after the server stops.
+    let otel_guard = telemetry::try_init_otel(&config);
+
     // Warn if the config reports a GPU device but GPU isn't compiled in.
     // Metal is auto-compiled on macOS, but CUDA requires --features all-cuda on Linux.
     let gpu_compiled = inference_tasks::is_gpu_compiled();
@@ -427,6 +437,11 @@ async fn start_server(config: Config) -> anyhow::Result<()> {
     // Start gRPC server
     let server = WorkerServer::from_boxed(task, config);
     server.serve_with_shutdown().await?;
+
+    // Flush OTel telemetry on shutdown
+    if let Some(guard) = otel_guard {
+        guard.shutdown();
+    }
 
     Ok(())
 }

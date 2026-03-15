@@ -27,5 +27,8 @@ tower = { version = "0.5", features = ["limit"] }
 uuid.workspace = true
 futures.workspace = true
 
+# OpenTelemetry metrics (env-gated at runtime)
+opentelemetry.workspace = true
+
 [build-dependencies]
 tonic-prost-build.workspace = true

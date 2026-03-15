@@ -16,7 +16,7 @@ metal = ["candle-metal", "llama-metal"]
 # CUDA requires explicit opt-in (Linux/Windows only)
 all-cuda = ["cuda", "candle-cuda", "llama-cuda"]
 # CUDA support for Linux/Windows (NVIDIA GPU)
-cuda = ["inference-tasks/cuda"]
+cuda = ["inference-tasks/cuda", "dep:nvml-wrapper"]
 # Candle backend for text-generation (Rust-native ML)
 candle = ["inference-tasks/candle"]
 candle-metal = ["candle", "inference-tasks/candle-metal"]
@@ -48,6 +48,12 @@ async-trait.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+# OpenTelemetry (env-gated at runtime — disabled unless OTEL_ENDPOINT is set)
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+opentelemetry-otlp.workspace = true
+tracing-opentelemetry.workspace = true
+
 # Config
 serde.workspace = true
 serde_json.workspace = true
@@ -62,6 +68,15 @@ reqwest = { version = "0.12", features = ["json"] }
 
 # Error handling
 anyhow.workspace = true
+
+# .env file loading
+dotenvy.workspace = true
+
+# System metrics (process memory)
+sysinfo.workspace = true
+
+# GPU metrics (CUDA only — gated behind "cuda" feature)
+nvml-wrapper = { workspace = true, optional = true }
 
 [dev-dependencies]
 uuid = { version = "1.0", features = ["v4"] }
