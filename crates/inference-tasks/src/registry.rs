@@ -25,7 +25,9 @@ use tracing::info;
 use inference_onnx::{ClipTask, OnnxTask, PaddleOcrTask, Seq2SeqTask};
 
 #[cfg(feature = "candle")]
-use inference_candle::{CandleBartTask, CandleEncoderTask, CandleSeq2SeqTask, CandleTextGenTask, CandleTtsTask};
+use inference_candle::{
+    CandleBartTask, CandleEncoderTask, CandleSeq2SeqTask, CandleTextGenTask, CandleTtsTask,
+};
 
 #[cfg(feature = "llama")]
 use inference_llama::LlamaTextGenTask;
@@ -634,9 +636,8 @@ impl TaskRegistry {
 
         // Read config.json to check model_type
         let config_path = model_dir.join("config.json");
-        let config_content = std::fs::read_to_string(&config_path).map_err(|e| {
-            TaskError::ModelLoad(format!("Failed to read config.json: {e}"))
-        })?;
+        let config_content = std::fs::read_to_string(&config_path)
+            .map_err(|e| TaskError::ModelLoad(format!("Failed to read config.json: {e}")))?;
         let config_json: serde_json::Value = serde_json::from_str(&config_content)
             .map_err(|e| TaskError::ModelLoad(format!("Invalid config.json: {e}")))?;
 
@@ -659,7 +660,9 @@ impl TaskRegistry {
         )
         .await
         .map_err(|e| {
-            TaskError::ModelLoad(format!("Failed to init HF loader for speech_tokenizer: {e}"))
+            TaskError::ModelLoad(format!(
+                "Failed to init HF loader for speech_tokenizer: {e}"
+            ))
         })?;
 
         // Download speech_tokenizer/model.safetensors (required for audio output)
@@ -855,8 +858,8 @@ impl TaskRegistry {
                     let index_content = std::fs::read_to_string(&index_path).map_err(|e| {
                         TaskError::ModelLoad(format!("Failed to read safetensors index: {e}"))
                     })?;
-                    let index: serde_json::Value = serde_json::from_str(&index_content)
-                        .map_err(|e| {
+                    let index: serde_json::Value =
+                        serde_json::from_str(&index_content).map_err(|e| {
                             TaskError::ModelLoad(format!("Invalid safetensors index: {e}"))
                         })?;
 

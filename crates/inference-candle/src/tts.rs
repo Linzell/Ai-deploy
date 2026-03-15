@@ -280,7 +280,8 @@ impl CandleTtsTask {
     ) -> TaskResult<Vec<f32>> {
         match &self.backend {
             TtsBackend::Parler { model, tokenizer } => {
-                self.generate_parler(text, voice_description, model, tokenizer).await
+                self.generate_parler(text, voice_description, model, tokenizer)
+                    .await
             }
             TtsBackend::Qwen3 { model, tokenizer } => {
                 self.generate_qwen3(text, model, tokenizer).await
@@ -425,11 +426,7 @@ impl CandleTtsTask {
     }
 
     /// Load Qwen3 TTS model.
-    fn load_qwen3_tts(
-        model_dir: &Path,
-        name: String,
-        config: &AppConfig,
-    ) -> TaskResult<Self> {
+    fn load_qwen3_tts(model_dir: &Path, name: String, config: &AppConfig) -> TaskResult<Self> {
         let device = utils::resolve_device(&config.device)?;
         let gen_config = TtsGenConfig::from_config(config);
         let model_dtype = utils::read_model_dtype(&model_dir.join("config.json"));
@@ -438,7 +435,8 @@ impl CandleTtsTask {
 
         let tokenizer = utils::load_tokenizer(model_dir)?;
 
-        let qwen3_model = crate::qwen3_tts::Qwen3TtsModel::from_model_dir(model_dir, &device, dtype)?;
+        let qwen3_model =
+            crate::qwen3_tts::Qwen3TtsModel::from_model_dir(model_dir, &device, dtype)?;
         let sample_rate = 24000; // Qwen3 TTS default
 
         Ok(Self {

@@ -29,11 +29,11 @@ pub async fn select_model() -> anyhow::Result<Option<Selection>> {
         .map(|f| format!("{:<12} {}", f.name, style(f.description).dim()))
         .collect();
 
+    println!("\n{}", style("Maiia AI Inference Service").bold().cyan());
     println!(
-        "\n{}",
-        style("Maiia AI Inference Service").bold().cyan()
+        "{}\n",
+        style("Deploy any HuggingFace model with one command.").dim()
     );
-    println!("{}\n", style("Deploy any HuggingFace model with one command.").dim());
 
     let family_idx = Select::with_theme(&theme)
         .with_prompt("Select a task family")
@@ -66,10 +66,7 @@ pub async fn select_model_for_task_str(task: &str) -> anyhow::Result<Option<Sele
 }
 
 /// Select a task from a list of (task_id, description) pairs.
-fn select_task(
-    theme: &ColorfulTheme,
-    tasks: &[(&str, &str)],
-) -> anyhow::Result<Option<String>> {
+fn select_task(theme: &ColorfulTheme, tasks: &[(&str, &str)]) -> anyhow::Result<Option<String>> {
     let task_items: Vec<String> = tasks
         .iter()
         .map(|(id, desc)| format!("{id:<42} {}", style(desc).dim()))
@@ -127,7 +124,12 @@ async fn select_model_for_task(
 /// Format model list for display in the selector.
 fn format_model_list(models: &[HfModelSummary]) -> Vec<String> {
     // Find max model ID length for alignment
-    let max_id_len = models.iter().map(|m| m.id.len()).max().unwrap_or(40).min(55);
+    let max_id_len = models
+        .iter()
+        .map(|m| m.id.len())
+        .max()
+        .unwrap_or(40)
+        .min(55);
 
     models
         .iter()

@@ -294,11 +294,7 @@ impl LlamaWorker {
             );
         }
 
-        debug!(
-            prompt_len = prompt_len,
-            n_ctx = n_ctx,
-            "Tokenized prompt"
-        );
+        debug!(prompt_len = prompt_len, n_ctx = n_ctx, "Tokenized prompt");
 
         // Clear the KV cache
         ctx.clear_kv_cache();
@@ -308,9 +304,8 @@ impl LlamaWorker {
         let mut batch = LlamaBatch::new(batch_capacity, 1);
 
         // Add prompt tokens to batch
-        let last_index = i32::try_from(prompt_len - 1).map_err(|_| {
-            TaskError::Inference("Position overflow: prompt too long".to_string())
-        })?;
+        let last_index = i32::try_from(prompt_len - 1)
+            .map_err(|_| TaskError::Inference("Position overflow: prompt too long".to_string()))?;
         for (i, token) in (0_i32..).zip(tokens.iter()) {
             let is_last = i == last_index;
             batch

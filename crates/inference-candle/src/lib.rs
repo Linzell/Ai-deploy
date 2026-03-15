@@ -38,7 +38,9 @@ pub use text_gen::{
     CandleGenConfig, CandleTextGenInput, CandleTextGenOutput, CandleTextGenTask, TextGenModelArch,
 };
 pub use tts::{CandleTtsInput, CandleTtsOutput, CandleTtsTask, TtsGenConfig};
-pub use utils::{find_weight_files, is_gguf, is_gpu_compiled, load_safetensors_safe, resolve_device};
+pub use utils::{
+    find_weight_files, is_gguf, is_gpu_compiled, load_safetensors_safe, resolve_device,
+};
 
 // Re-export from inference-core for convenience
 pub use inference_core::task::{Task, TaskChunk, TaskResult as GrpcTaskResult, TaskStream};

@@ -147,25 +147,50 @@ impl MlmHead {
 
         // cls.predictions.transform.dense
         let dense = candle_nn::linear(hidden_size, hidden_size, cls_vb.pp("transform").pp("dense"))
-            .map_err(|e| TaskError::ModelLoad(format!("MLM head: failed to load transform.dense: {e}")))?;
+            .map_err(|e| {
+                TaskError::ModelLoad(format!("MLM head: failed to load transform.dense: {e}"))
+            })?;
 
         // cls.predictions.transform.LayerNorm
-        let layer_norm = candle_nn::layer_norm(hidden_size, 1e-12, cls_vb.pp("transform").pp("LayerNorm"))
-            .map_err(|e| TaskError::ModelLoad(format!("MLM head: failed to load transform.LayerNorm: {e}")))?;
+        let layer_norm =
+            candle_nn::layer_norm(hidden_size, 1e-12, cls_vb.pp("transform").pp("LayerNorm"))
+                .map_err(|e| {
+                    TaskError::ModelLoad(format!(
+                        "MLM head: failed to load transform.LayerNorm: {e}"
+                    ))
+                })?;
 
         // Decoder projection: use word_embeddings.weight (weight-tied)
         // Try multiple prefixes since BertModel may use bert.embeddings or just embeddings
         let decoder_weight = vb
-            .pp("bert").pp("embeddings").pp("word_embeddings").get_unchecked("weight")
-            .or_else(|_| vb.pp("embeddings").pp("word_embeddings").get_unchecked("weight"))
-            .map_err(|e| TaskError::ModelLoad(format!("MLM head: failed to load word_embeddings.weight for decoder: {e}")))?;
+            .pp("bert")
+            .pp("embeddings")
+            .pp("word_embeddings")
+            .get_unchecked("weight")
+            .or_else(|_| {
+                vb.pp("embeddings")
+                    .pp("word_embeddings")
+                    .get_unchecked("weight")
+            })
+            .map_err(|e| {
+                TaskError::ModelLoad(format!(
+                    "MLM head: failed to load word_embeddings.weight for decoder: {e}"
+                ))
+            })?;
 
         // cls.predictions.bias (output bias over vocab)
-        let decoder_bias = cls_vb
-            .get_unchecked("bias")
-            .map_err(|e| TaskError::ModelLoad(format!("MLM head: failed to load cls.predictions.bias: {e}")))?;
+        let decoder_bias = cls_vb.get_unchecked("bias").map_err(|e| {
+            TaskError::ModelLoad(format!(
+                "MLM head: failed to load cls.predictions.bias: {e}"
+            ))
+        })?;
 
-        Ok(Self { dense, layer_norm, decoder_weight, decoder_bias })
+        Ok(Self {
+            dense,
+            layer_norm,
+            decoder_weight,
+            decoder_bias,
+        })
     }
 
     /// Forward: hidden_states [batch, seq, hidden] → logits [batch, seq, vocab]
@@ -269,7 +294,11 @@ impl CandleEncoderTask {
         let is_pytorch = utils::is_pytorch_bin(&weight_files);
         info!(
             num_files = weight_files.len(),
-            format = if is_pytorch { "pytorch_model.bin" } else { "safetensors" },
+            format = if is_pytorch {
+                "pytorch_model.bin"
+            } else {
+                "safetensors"
+            },
             "Found weight files"
         );
 
@@ -473,10 +502,7 @@ impl CandleEncoderTask {
         Ok(serde_json::json!(entities))
     }
 
-    fn process_text_classification(
-        &self,
-        logits: &Tensor,
-    ) -> TaskResult<serde_json::Value> {
+    fn process_text_classification(&self, logits: &Tensor) -> TaskResult<serde_json::Value> {
         // logits: [1, num_labels] — take first token (CLS) if [1, seq, num_labels]
         let logits = match logits.rank() {
             3 => {
@@ -492,9 +518,7 @@ impl CandleEncoderTask {
                     .map_err(|e| TaskError::Inference(format!("squeeze failed: {e}")))?
             }
             r => {
-                return Err(TaskError::Inference(format!(
-                    "Unexpected logits rank: {r}"
-                )));
+                return Err(TaskError::Inference(format!("Unexpected logits rank: {r}")));
             }
         };
 
@@ -541,9 +565,7 @@ impl CandleEncoderTask {
         let mask_idx = tokens
             .iter()
             .position(|t| t == "[MASK]" || t == "<mask>")
-            .ok_or_else(|| {
-                TaskError::InvalidInput("No [MASK] token found in input".into())
-            })?;
+            .ok_or_else(|| TaskError::InvalidInput("No [MASK] token found in input".into()))?;
 
         let Some(mlm_head) = &self.mlm_head else {
             // No MLM head — return hidden state as fallback
@@ -591,7 +613,9 @@ impl CandleEncoderTask {
                     .id_to_token(token_id as u32)
                     .unwrap_or_else(|| format!("[UNK:{token_id}]"));
                 // Build the filled sentence
-                let filled = text.replace("[MASK]", &token_str).replace("<mask>", &token_str);
+                let filled = text
+                    .replace("[MASK]", &token_str)
+                    .replace("<mask>", &token_str);
                 serde_json::json!({
                     "score": score,
                     "token": token_id,
@@ -612,10 +636,7 @@ impl CandleEncoderTask {
     }
 
     #[allow(clippy::unused_self)]
-    fn process_feature_extraction(
-        &self,
-        hidden_states: &Tensor,
-    ) -> TaskResult<serde_json::Value> {
+    fn process_feature_extraction(&self, hidden_states: &Tensor) -> TaskResult<serde_json::Value> {
         // hidden_states: [1, seq_len, hidden_size]
         // Mean pooling over non-padding tokens
         let hidden = hidden_states

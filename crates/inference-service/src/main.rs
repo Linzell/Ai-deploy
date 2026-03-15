@@ -133,7 +133,10 @@ async fn run_with_model(model_id: &str, cli: &Cli) -> anyhow::Result<()> {
                 "Model '{model_id}' has no supported files (.safetensors, .onnx, .gguf, .bin) \
                  and no compatible variant was found on HuggingFace. \
                  Try: inference-service --task {task} to browse supported models.",
-                task = model_info.pipeline_tag.as_deref().unwrap_or("text-generation"),
+                task = model_info
+                    .pipeline_tag
+                    .as_deref()
+                    .unwrap_or("text-generation"),
             );
         }
     }
@@ -203,10 +206,7 @@ async fn run_with_model(model_id: &str, cli: &Cli) -> anyhow::Result<()> {
     }
 
     // Allow CLI --backend to override
-    let backend_str = cli
-        .backend
-        .as_deref()
-        .unwrap_or(&inferred_backend);
+    let backend_str = cli.backend.as_deref().unwrap_or(&inferred_backend);
 
     // --- GGUF auto-routing for large text-generation models ---
     // For large models (>2GB safetensors), llama.cpp with GGUF quantized weights
@@ -225,7 +225,9 @@ async fn run_with_model(model_id: &str, cli: &Cli) -> anyhow::Result<()> {
     let gpu_actually_available = inference_tasks::is_gpu_compiled();
     let _is_gpu = match &effective_device {
         inference_core::DeviceType::Cpu => false,
-        inference_core::DeviceType::Metal | inference_core::DeviceType::Cuda | inference_core::DeviceType::Gpu => {
+        inference_core::DeviceType::Metal
+        | inference_core::DeviceType::Cuda
+        | inference_core::DeviceType::Gpu => {
             if gpu_actually_available {
                 true
             } else {
@@ -244,60 +246,62 @@ async fn run_with_model(model_id: &str, cli: &Cli) -> anyhow::Result<()> {
     let already_gguf = backend_str == "llama";
 
     // Final resolved values
-    let (final_backend, final_model_id, final_onnx_file, final_gguf_file) =
-        if is_large && is_text_gen && !already_gguf {
-            info!(
-                model = %effective_model_id,
-                safetensors_mb = model_info.safetensors_size() / (1024 * 1024),
-                device = ?effective_device,
-                "Large text-gen model — searching for GGUF variant (llama.cpp is faster for autoregressive decoding)"
-            );
-            match hf_api::find_gguf_variant(&effective_model_id).await {
-                Ok(Some(gguf_info)) => {
-                    let gguf_model_id = gguf_info.id.clone();
-                    let gguf_file = gguf_info.find_gguf_file().map(String::from);
-                    info!(
-                        original = %effective_model_id,
-                        gguf_variant = %gguf_model_id,
-                        gguf_file = ?gguf_file,
-                        "Auto-routing to GGUF variant via llama.cpp"
-                    );
-                    ("llama", gguf_model_id, None, gguf_file)
-                }
-                Ok(None) => {
-                    warn!(
-                        model = %effective_model_id,
-                        "No GGUF variant found — falling back to Candle (may be slow for large models)"
-                    );
-                    (
-                        backend_str,
-                        effective_model_id,
-                        inferred_onnx,
-                        inferred_gguf,
-                    )
-                }
-                Err(e) => {
-                    warn!(
-                        model = %effective_model_id,
-                        error = %e,
-                        "GGUF variant search failed — falling back to Candle"
-                    );
-                    (
-                        backend_str,
-                        effective_model_id,
-                        inferred_onnx,
-                        inferred_gguf,
-                    )
-                }
+    let (final_backend, final_model_id, final_onnx_file, final_gguf_file) = if is_large
+        && is_text_gen
+        && !already_gguf
+    {
+        info!(
+            model = %effective_model_id,
+            safetensors_mb = model_info.safetensors_size() / (1024 * 1024),
+            device = ?effective_device,
+            "Large text-gen model — searching for GGUF variant (llama.cpp is faster for autoregressive decoding)"
+        );
+        match hf_api::find_gguf_variant(&effective_model_id).await {
+            Ok(Some(gguf_info)) => {
+                let gguf_model_id = gguf_info.id.clone();
+                let gguf_file = gguf_info.find_gguf_file().map(String::from);
+                info!(
+                    original = %effective_model_id,
+                    gguf_variant = %gguf_model_id,
+                    gguf_file = ?gguf_file,
+                    "Auto-routing to GGUF variant via llama.cpp"
+                );
+                ("llama", gguf_model_id, None, gguf_file)
             }
-        } else {
-            (
-                backend_str,
-                effective_model_id,
-                inferred_onnx,
-                inferred_gguf,
-            )
-        };
+            Ok(None) => {
+                warn!(
+                    model = %effective_model_id,
+                    "No GGUF variant found — falling back to Candle (may be slow for large models)"
+                );
+                (
+                    backend_str,
+                    effective_model_id,
+                    inferred_onnx,
+                    inferred_gguf,
+                )
+            }
+            Err(e) => {
+                warn!(
+                    model = %effective_model_id,
+                    error = %e,
+                    "GGUF variant search failed — falling back to Candle"
+                );
+                (
+                    backend_str,
+                    effective_model_id,
+                    inferred_onnx,
+                    inferred_gguf,
+                )
+            }
+        }
+    } else {
+        (
+            backend_str,
+            effective_model_id,
+            inferred_onnx,
+            inferred_gguf,
+        )
+    };
 
     info!(
         model = %final_model_id,

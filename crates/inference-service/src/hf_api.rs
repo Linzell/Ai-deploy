@@ -173,9 +173,21 @@ impl HfModelInfo {
     /// This check prevents routing seq2seq models into the encoder-only pipeline.
     pub fn is_seq2seq_architecture(&self) -> bool {
         const SEQ2SEQ_ARCHS: &[&str] = &[
-            "bart", "mbart", "t5", "mt5", "pegasus", "marian", "led",
-            "longt5", "bigbird_pegasus", "blenderbot", "fsmt", "prophetnet",
-            "plbart", "mvp", "nllb",
+            "bart",
+            "mbart",
+            "t5",
+            "mt5",
+            "pegasus",
+            "marian",
+            "led",
+            "longt5",
+            "bigbird_pegasus",
+            "blenderbot",
+            "fsmt",
+            "prophetnet",
+            "plbart",
+            "mvp",
+            "nllb",
         ];
         self.tags.iter().any(|t| {
             let lower = t.to_lowercase();
@@ -218,14 +230,17 @@ impl HfModelInfo {
 
         // Tasks Candle supports via encoder backend (BERT-family)
         let task_type = inference_core::TaskType::new(tag);
-        let candle_encoder_supported = task_type.is_encoder_only() && !self.is_seq2seq_architecture();
+        let candle_encoder_supported =
+            task_type.is_encoder_only() && !self.is_seq2seq_architecture();
 
         // Seq2seq models (BART/T5) on encoder-only tasks (e.g. zero-shot-classification)
         // → route to candle BART task instead of blocking
         let candle_bart_supported = task_type.is_encoder_only() && self.is_seq2seq_architecture();
 
         // Safetensors + Candle-supported task -> candle
-        if (candle_gen_supported || candle_encoder_supported || candle_bart_supported) && self.has_safetensors() {
+        if (candle_gen_supported || candle_encoder_supported || candle_bart_supported)
+            && self.has_safetensors()
+        {
             return ("candle", None, None);
         }
 
@@ -344,11 +359,7 @@ pub async fn search_models(task: &str, limit: usize) -> anyhow::Result<Vec<HfMod
     // Keep only models that have at least one supported weight-format tag.
     let models: Vec<HfModelSummary> = all
         .into_iter()
-        .filter(|m| {
-            m.tags
-                .iter()
-                .any(|t| SUPPORTED_TAGS.contains(&t.as_str()))
-        })
+        .filter(|m| m.tags.iter().any(|t| SUPPORTED_TAGS.contains(&t.as_str())))
         .take(limit)
         .collect();
 
@@ -389,9 +400,8 @@ pub async fn find_gguf_variant(model_id: &str) -> anyhow::Result<Option<HfModelI
     let client = reqwest::Client::new();
 
     // Search for GGUF conversions — these often include "GGUF" in their name
-    let url = format!(
-        "{HF_API_BASE}?search={model_name}+GGUF&sort=downloads&direction=-1&limit=10",
-    );
+    let url =
+        format!("{HF_API_BASE}?search={model_name}+GGUF&sort=downloads&direction=-1&limit=10",);
 
     let resp = client
         .get(&url)
@@ -433,9 +443,7 @@ pub async fn find_compatible_variant(model_id: &str) -> anyhow::Result<Option<Hf
     let client = reqwest::Client::new();
 
     // Search broadly — no tag filter so we catch ONNX, GGUF, and safetensors variants
-    let url = format!(
-        "{HF_API_BASE}?search={model_name}&sort=downloads&direction=-1&limit=10",
-    );
+    let url = format!("{HF_API_BASE}?search={model_name}&sort=downloads&direction=-1&limit=10",);
 
     let resp = client
         .get(&url)

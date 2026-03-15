@@ -83,11 +83,7 @@ struct BartAttention {
 }
 
 impl BartAttention {
-    fn load(
-        num_heads: usize,
-        d_model: usize,
-        vb: VarBuilder,
-    ) -> candle_core::Result<Self> {
+    fn load(num_heads: usize, d_model: usize, vb: VarBuilder) -> candle_core::Result<Self> {
         let head_dim = d_model / num_heads;
         let scaling = (head_dim as f64).powf(-0.5);
         let q_proj = candle_nn::linear(d_model, d_model, vb.pp("q_proj"))?;
@@ -173,8 +169,7 @@ impl BartEncoderLayer {
     fn load(cfg: &BartConfig, vb: VarBuilder) -> candle_core::Result<Self> {
         let self_attn =
             BartAttention::load(cfg.encoder_attention_heads, cfg.d_model, vb.pp("self_attn"))?;
-        let self_attn_layer_norm =
-            layer_norm(cfg.d_model, 1e-5, vb.pp("self_attn_layer_norm"))?;
+        let self_attn_layer_norm = layer_norm(cfg.d_model, 1e-5, vb.pp("self_attn_layer_norm"))?;
         let fc1 = candle_nn::linear(cfg.d_model, cfg.encoder_ffn_dim, vb.pp("fc1"))?;
         let fc2 = candle_nn::linear(cfg.encoder_ffn_dim, cfg.d_model, vb.pp("fc2"))?;
         let final_layer_norm = layer_norm(cfg.d_model, 1e-5, vb.pp("final_layer_norm"))?;
@@ -221,10 +216,12 @@ impl BartDecoderLayer {
     fn load(cfg: &BartConfig, vb: VarBuilder) -> candle_core::Result<Self> {
         let self_attn =
             BartAttention::load(cfg.decoder_attention_heads, cfg.d_model, vb.pp("self_attn"))?;
-        let self_attn_layer_norm =
-            layer_norm(cfg.d_model, 1e-5, vb.pp("self_attn_layer_norm"))?;
-        let encoder_attn =
-            BartAttention::load(cfg.decoder_attention_heads, cfg.d_model, vb.pp("encoder_attn"))?;
+        let self_attn_layer_norm = layer_norm(cfg.d_model, 1e-5, vb.pp("self_attn_layer_norm"))?;
+        let encoder_attn = BartAttention::load(
+            cfg.decoder_attention_heads,
+            cfg.d_model,
+            vb.pp("encoder_attn"),
+        )?;
         let encoder_attn_layer_norm =
             layer_norm(cfg.d_model, 1e-5, vb.pp("encoder_attn_layer_norm"))?;
         let fc1 = candle_nn::linear(cfg.d_model, cfg.decoder_ffn_dim, vb.pp("fc1"))?;
@@ -290,8 +287,7 @@ impl BartEncoder {
                 .get((cfg.max_position_embeddings + 2, cfg.d_model), "weight")?,
             cfg.d_model,
         );
-        let layernorm_embedding =
-            layer_norm(cfg.d_model, 1e-5, vb.pp("layernorm_embedding"))?;
+        let layernorm_embedding = layer_norm(cfg.d_model, 1e-5, vb.pp("layernorm_embedding"))?;
         let vb_layers = vb.pp("layers");
         let mut layers = Vec::with_capacity(cfg.encoder_layers);
         for i in 0..cfg.encoder_layers {
@@ -329,17 +325,13 @@ struct BartDecoder {
 }
 
 impl BartDecoder {
-    fn load(
-        cfg: &BartConfig,
-        vb: VarBuilder,
-    ) -> candle_core::Result<Self> {
+    fn load(cfg: &BartConfig, vb: VarBuilder) -> candle_core::Result<Self> {
         let embed_positions = Embedding::new(
             vb.pp("embed_positions")
                 .get((cfg.max_position_embeddings + 2, cfg.d_model), "weight")?,
             cfg.d_model,
         );
-        let layernorm_embedding =
-            layer_norm(cfg.d_model, 1e-5, vb.pp("layernorm_embedding"))?;
+        let layernorm_embedding = layer_norm(cfg.d_model, 1e-5, vb.pp("layernorm_embedding"))?;
         let vb_layers = vb.pp("layers");
         let mut layers = Vec::with_capacity(cfg.decoder_layers);
         for i in 0..cfg.decoder_layers {
@@ -367,9 +359,7 @@ impl BartDecoder {
 
         // Causal mask for decoder self-attention
         let mask: Vec<f32> = (0..seq_len)
-            .flat_map(|i| {
-                (0..seq_len).map(move |j| if j > i { f32::NEG_INFINITY } else { 0f32 })
-            })
+            .flat_map(|i| (0..seq_len).map(move |j| if j > i { f32::NEG_INFINITY } else { 0f32 }))
             .collect();
         let causal_mask = Tensor::from_vec(mask, (seq_len, seq_len), token_embeds.device())?;
 
@@ -416,14 +406,12 @@ struct BartForSequenceClassification {
 }
 
 impl BartForSequenceClassification {
-    fn load(
-        cfg: &BartConfig,
-        num_labels: usize,
-        vb: VarBuilder,
-    ) -> TaskResult<Self> {
+    fn load(cfg: &BartConfig, num_labels: usize, vb: VarBuilder) -> TaskResult<Self> {
         let model_vb = vb.pp("model");
         let shared = Embedding::new(
-            model_vb.pp("shared").get((cfg.vocab_size, cfg.d_model), "weight")
+            model_vb
+                .pp("shared")
+                .get((cfg.vocab_size, cfg.d_model), "weight")
                 .map_err(|e| TaskError::ModelLoad(format!("shared embeddings: {e}")))?,
             cfg.d_model,
         );
@@ -652,20 +640,13 @@ impl CandleBartTask {
 
     /// Zero-shot classification: run NLI for each candidate label and softmax
     /// across entailment scores.
-    fn zero_shot(
-        &self,
-        text: &str,
-        candidate_labels: &[String],
-    ) -> TaskResult<serde_json::Value> {
+    fn zero_shot(&self, text: &str, candidate_labels: &[String]) -> TaskResult<serde_json::Value> {
         let mut entailment_logits = Vec::with_capacity(candidate_labels.len());
 
         for label in candidate_labels {
             let hypothesis = format!("This example is {label}.");
             let logits = self.classify_pair(text, &hypothesis)?;
-            let entailment_score = logits
-                .get(self.entailment_idx)
-                .copied()
-                .unwrap_or(0.0);
+            let entailment_score = logits.get(self.entailment_idx).copied().unwrap_or(0.0);
             entailment_logits.push(entailment_score);
         }
 
