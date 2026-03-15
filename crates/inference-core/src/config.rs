@@ -1130,13 +1130,23 @@ impl Config {
         Ok(())
     }
 
-    /// Generate task name from task type if not explicitly set.
+    /// Generate task name: explicit > model-derived > task-type fallback.
     pub fn effective_task_name(&self) -> String {
+        // If task_name was explicitly set (not the default sentinel), use it.
         if self.task_name != "maiia.echo.v1" || self.task_type.is_echo() {
-            self.task_name.clone()
-        } else {
-            format!("maiia.{}.v1", self.task_type)
+            return self.task_name.clone();
         }
+
+        // Derive from model_path: "onnx-community/nsfw_image_detection-ONNX" → "onnx-community.nsfw_image_detection-ONNX.v1"
+        if let Some(ref model_path) = self.model_path {
+            if !model_path.is_empty() {
+                let model_slug = model_path.replace('/', ".");
+                return format!("{model_slug}.v1");
+            }
+        }
+
+        // Fallback to task type
+        format!("maiia.{}.v1", self.task_type)
     }
 
     /// Returns true if TLS is configured (both cert and key paths are set).
@@ -1238,10 +1248,11 @@ impl Config {
         // Auto-derive batching from task type
         config.enable_batching = !config.task_type.is_seq2seq();
 
-        // Auto-derive service name
-        let task_slug = task_type.replace(' ', "-");
-        config.service_name = format!("maiia-{task_slug}-worker");
-        config.task_name = format!("maiia.{task_slug}.v1");
+        // Auto-derive service_name and task_name from model_id.
+        // "onnx-community/nsfw_image_detection-ONNX" → "onnx-community.nsfw_image_detection-ONNX.v1"
+        let model_slug = model_id.replace('/', ".");
+        config.service_name = format!("{model_slug}-worker");
+        config.task_name = format!("{model_slug}.v1");
 
         // Apply optional overrides
         if let Some(d) = device {

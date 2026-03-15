@@ -125,15 +125,13 @@ impl WorkerService for WorkerServiceImpl {
 
         info!("[{}] ExecuteTask received: {}", request_id, task_name);
 
-        // Validate task name - return NOT_FOUND status for unknown tasks
+        // Warn on task name mismatch but still process the request.
+        // Clients may not know the exact task name; blocking them is unhelpful.
         if task_name != self.task.name() {
-            let error_msg = format!(
-                "Unknown task: '{}'. This worker handles: '{}'",
-                task_name,
-                self.task.name()
+            warn!(
+                "[{}] Task name mismatch: got '{}', this worker handles '{}'. Processing anyway.",
+                request_id, task_name, self.task.name()
             );
-            error!("[{}] {}", request_id, error_msg);
-            return Err(Status::not_found(error_msg));
         }
 
         // --- Execute task with optional timeout ---
@@ -196,12 +194,17 @@ impl WorkerService for WorkerServiceImpl {
             );
         }
 
-        Ok(Response::new(TaskResponse {
+        let mut response = Response::new(TaskResponse {
             success: result.success,
             result: result.result.unwrap_or_default(),
             error: result.error.unwrap_or_default(),
             duration_ms,
-        }))
+        });
+        // Always advertise the worker's task name so clients can discover it.
+        if let Ok(val) = self.task.name().parse() {
+            response.metadata_mut().insert("x-task-name", val);
+        }
+        Ok(response)
     }
 
     type StreamTaskStream =
@@ -230,15 +233,12 @@ impl WorkerService for WorkerServiceImpl {
 
         info!("[{}] StreamTask received: {}", request_id, task_name);
 
-        // Validate task name - return NOT_FOUND status for unknown tasks
+        // Warn on task name mismatch but still process the request.
         if task_name != self.task.name() {
-            let error_msg = format!(
-                "Unknown task: '{}'. This worker handles: '{}'",
-                task_name,
-                self.task.name()
+            warn!(
+                "[{}] Task name mismatch: got '{}', this worker handles '{}'. Processing anyway.",
+                request_id, task_name, self.task.name()
             );
-            error!("[{}] {}", request_id, error_msg);
-            return Err(Status::not_found(error_msg));
         }
 
         // Execute streaming task

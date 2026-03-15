@@ -88,7 +88,7 @@ mod helpers {
         }
     }
 
-    /// Discover task name by probing server
+    /// Discover task name by probing server via the x-task-name response header.
     pub async fn discover_task_name(addr: &str) -> Option<String> {
         let mut client = worker_client(addr).await.ok()?;
 
@@ -100,17 +100,14 @@ mod helpers {
         };
 
         match client.execute_task(request).await {
-            Err(status) => {
-                let msg = status.message();
-                if let Some(start) = msg.find("handles: '") {
-                    let rest = &msg[start + 10..];
-                    if let Some(end) = rest.find('\'') {
-                        return Some(rest[..end].to_string());
-                    }
+            Ok(resp) => {
+                // Read the worker's actual task name from response metadata.
+                if let Some(val) = resp.metadata().get("x-task-name") {
+                    return val.to_str().ok().map(String::from);
                 }
                 None
             }
-            Ok(_) => Some("__probe__".to_string()),
+            Err(_) => None,
         }
     }
 
@@ -1341,9 +1338,11 @@ async fn test_unknown_task_error() {
         return;
     }
 
+    // Task name mismatch is now lenient — the worker warns but still processes.
+    // An unknown task_name with a valid payload should succeed, not error.
     let result = helpers::execute_task(SERVER_ADDR, "nonexistent.task.v1", "{}").await;
-    assert!(result.is_err(), "Unknown task should return error");
-    println!("Unknown task error: PASSED");
+    assert!(result.is_ok(), "Mismatched task name should still be processed");
+    println!("Unknown task lenient handling: PASSED");
 }
 
 #[tokio::test]
