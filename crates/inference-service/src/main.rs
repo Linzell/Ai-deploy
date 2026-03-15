@@ -117,7 +117,7 @@ async fn run_with_model(model_id: &str, cli: &Cli) -> anyhow::Result<()> {
     if !model_info.has_supported_files() {
         info!(
             model = model_id,
-            "No supported files (.safetensors, .onnx, .gguf) found, searching for compatible variant..."
+            "No supported files (.safetensors, .onnx, .gguf, .bin) found, searching for compatible variant..."
         );
 
         if let Some(variant) = hf_api::find_compatible_variant(model_id).await? {
@@ -130,7 +130,7 @@ async fn run_with_model(model_id: &str, cli: &Cli) -> anyhow::Result<()> {
             model_info = variant;
         } else {
             anyhow::bail!(
-                "Model '{model_id}' has no supported files (.safetensors, .onnx, .gguf) \
+                "Model '{model_id}' has no supported files (.safetensors, .onnx, .gguf, .bin) \
                  and no compatible variant was found on HuggingFace. \
                  Try: inference-service --task {task} to browse supported models.",
                 task = model_info.pipeline_tag.as_deref().unwrap_or("text-generation"),
@@ -153,12 +153,16 @@ async fn run_with_model(model_id: &str, cli: &Cli) -> anyhow::Result<()> {
     let inferred_gguf: Option<String> = inferred_gguf_ref.map(String::from);
 
     // If infer_backend returned "onnx" but no ONNX file exists, the model has
-    // safetensors for a task Candle doesn't support. Search for an ONNX variant.
+    // safetensors for a task Candle doesn't support natively. Try to find an
+    // ONNX variant first; if none exists, fall back to Candle for encoder-only
+    // tasks or give a clear error for tasks that truly need ONNX.
     if inferred_backend == "onnx" && inferred_onnx.is_none() && !model_info.has_onnx() {
+        let task_obj = inference_core::TaskType::new(&task_type);
+
         info!(
             model = %effective_model_id,
             task = task_type,
-            "Model has safetensors but task '{}' needs ONNX backend — searching for ONNX variant...",
+            "Model has safetensors but task '{}' has no dedicated Candle backend — searching for ONNX variant...",
             task_type,
         );
 
@@ -175,31 +179,25 @@ async fn run_with_model(model_id: &str, cli: &Cli) -> anyhow::Result<()> {
                 inferred_onnx = new_onnx.map(String::from);
                 model_info = variant;
             }
-            Ok(Some(_)) => {
-                warn!(
-                    model = %effective_model_id,
-                    task = task_type,
-                    "Found variant but it has no ONNX files either. \
-                     The model may fail to load. Consider using a model \
-                     that has ONNX exports (e.g. from Optimum)."
-                );
-            }
-            Ok(None) => {
-                warn!(
-                    model = %effective_model_id,
-                    task = task_type,
-                    "No ONNX variant found for '{}'. This task requires ONNX \
-                     but the model only has safetensors. Try an ONNX-exported \
-                     model (e.g. from HuggingFace Optimum).",
-                    task_type,
-                );
-            }
-            Err(e) => {
-                warn!(
-                    model = %effective_model_id,
-                    error = %e,
-                    "ONNX variant search failed"
-                );
+            _ => {
+                if task_obj.is_encoder_only() {
+                    // Encoder-only text tasks can fall back to Candle's BertModel backend
+                    info!(
+                        model = %effective_model_id,
+                        task = task_type,
+                        "No ONNX variant found — falling back to Candle encoder backend",
+                    );
+                    inferred_backend = "candle".to_string();
+                } else {
+                    anyhow::bail!(
+                        "Model '{effective_model_id}' has safetensors but task '{task_type}' \
+                         requires an ONNX export and no ONNX variant was found.\n\n\
+                         Try one of these:\n  \
+                         1. Pick a model that has an ONNX export (look for an 'onnx/' branch)\n  \
+                         2. Export the model yourself: optimum-cli export onnx --model {effective_model_id} ./onnx-export/\n  \
+                         3. Use an ONNX-exported variant (e.g. from HuggingFace Optimum)",
+                    );
+                }
             }
         }
     }

@@ -206,8 +206,14 @@ pub fn find_weight_files(model_dir: &Path) -> TaskResult<Vec<PathBuf>> {
         return Ok(shards);
     }
 
+    // Check for PyTorch bin (legacy format — loaded via VarBuilder::from_pth)
+    let pytorch_bin = model_dir.join("pytorch_model.bin");
+    if pytorch_bin.exists() {
+        return Ok(vec![pytorch_bin]);
+    }
+
     Err(TaskError::ModelNotFound(
-        "No weight files found (safetensors or gguf)".into(),
+        "No weight files found (safetensors, gguf, or pytorch_model.bin)".into(),
     ))
 }
 
@@ -222,6 +228,107 @@ pub fn find_weight_files(model_dir: &Path) -> TaskResult<Vec<PathBuf>> {
 /// `true` if the first file has a `.gguf` extension.
 pub fn is_gguf(paths: &[PathBuf]) -> bool {
     paths.len() == 1 && paths[0].extension().is_some_and(|ext| ext == "gguf")
+}
+
+/// Check if the weight files are PyTorch bin format (legacy pickle).
+///
+/// # Arguments
+///
+/// * `paths` - Vector of weight file paths
+///
+/// # Returns
+///
+/// `true` if the first file has a `.bin` extension.
+pub fn is_pytorch_bin(paths: &[PathBuf]) -> bool {
+    paths.len() == 1 && paths[0].extension().is_some_and(|ext| ext == "bin")
+}
+
+/// Load a PyTorch `.bin` (pickle) file using candle's `VarBuilder::from_pth`.
+///
+/// This is a fallback for models that only have `pytorch_model.bin` without
+/// safetensors exports (common for older HuggingFace models).
+///
+/// # Arguments
+///
+/// * `path` - Path to the `pytorch_model.bin` file
+/// * `dtype` - Target data type for tensors
+/// * `device` - Device to load tensors onto
+///
+/// # Returns
+///
+/// A `VarBuilder` containing all tensors from the PyTorch file.
+pub fn load_pytorch_bin(
+    path: &Path,
+    dtype: DType,
+    device: &Device,
+) -> TaskResult<VarBuilder<'static>> {
+    info!(file = %path.display(), "Loading PyTorch bin file (legacy format)");
+
+    // Try zip-based PyTorch format first (newer torch.save format)
+    match VarBuilder::from_pth(path, dtype, device) {
+        Ok(vb) => return Ok(vb),
+        Err(e) => {
+            let err_str = format!("{e}");
+            if err_str.contains("EOCD") || err_str.contains("Zip") || err_str.contains("zip") {
+                info!("PyTorch file uses raw pickle format (non-zip), converting to safetensors via Python");
+            } else {
+                return Err(TaskError::ModelLoad(format!(
+                    "Failed to load PyTorch bin file {}: {e}",
+                    path.display()
+                )));
+            }
+        }
+    }
+
+    // Raw pickle format — convert to safetensors using Python
+    let safetensors_path = path.with_extension("safetensors");
+    if !safetensors_path.exists() {
+        convert_pytorch_to_safetensors(path, &safetensors_path)?;
+    }
+
+    // Load the converted safetensors file
+    load_safetensors_safe(&[safetensors_path], dtype, device)
+}
+
+/// Convert a raw-pickle PyTorch `.bin` file to safetensors format using Python.
+///
+/// Requires `torch` and `safetensors` Python packages to be installed.
+/// This is needed because candle's pickle loader only supports zip-based
+/// PyTorch files, while some older models use raw pickle protocol 2.
+fn convert_pytorch_to_safetensors(src: &Path, dst: &Path) -> TaskResult<()> {
+    let script = format!(
+        r#"
+import torch, safetensors.torch, sys
+state = torch.load("{src}", map_location="cpu", weights_only=True)
+safetensors.torch.save_file(state, "{dst}")
+"#,
+        src = src.display(),
+        dst = dst.display(),
+    );
+
+    info!(src = %src.display(), dst = %dst.display(), "Converting pytorch_model.bin to safetensors via Python");
+
+    let output = std::process::Command::new("python3")
+        .args(["-c", &script])
+        .output()
+        .map_err(|e| {
+            TaskError::ModelLoad(format!(
+                "Failed to run Python for pytorch->safetensors conversion: {e}. \
+                 Install Python 3 with `pip install torch safetensors` to load legacy .bin models, \
+                 or use a model that provides safetensors weights."
+            ))
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(TaskError::ModelLoad(format!(
+            "Python pytorch->safetensors conversion failed: {stderr}. \
+             Ensure `torch` and `safetensors` are installed: pip install torch safetensors"
+        )));
+    }
+
+    info!(dst = %dst.display(), "Successfully converted to safetensors");
+    Ok(())
 }
 
 /// Load safetensors files without using memory-mapped I/O.
@@ -297,6 +404,15 @@ pub fn load_safetensors_safe(
                     ))
                 })?
             };
+
+            // Normalize old-style LayerNorm naming:
+            //   LayerNorm.gamma → LayerNorm.weight
+            //   LayerNorm.beta  → LayerNorm.bias
+            // Many older HuggingFace models (bert-base-uncased, etc.) use gamma/beta
+            // but candle's layer_norm() expects weight/bias.
+            let name = name
+                .replace("LayerNorm.gamma", "LayerNorm.weight")
+                .replace("LayerNorm.beta", "LayerNorm.bias");
 
             all_tensors.insert(name, tensor);
         }
@@ -447,6 +563,121 @@ fn cache_dtype_precision_rank(dt: CacheDType) -> u8 {
         CacheDType::F16 | CacheDType::BF16 => 2,
         CacheDType::F32 => 3,
     }
+}
+
+/// Load a tokenizer from a model directory, trying all known formats.
+///
+/// Fallback order:
+/// 1. `tokenizer.json` — standard HuggingFace format (covers all tokenizer types)
+/// 2. `vocab.txt` — WordPiece (BERT-family models)
+/// 3. `vocab.json` + `merges.txt` — BPE (GPT-2, Qwen, etc.)
+///
+/// Tekken (`tekken.json`) is NOT handled here — Voxtral's Tekken tokenizer
+/// uses a different type and is loaded by its own code path.
+pub fn load_tokenizer(model_dir: &Path) -> TaskResult<tokenizers::Tokenizer> {
+    use tokenizers::Tokenizer;
+
+    let tokenizer_json = model_dir.join("tokenizer.json");
+    let vocab_txt = model_dir.join("vocab.txt");
+    let vocab_json = model_dir.join("vocab.json");
+    let merges_txt = model_dir.join("merges.txt");
+
+    if tokenizer_json.exists() {
+        Tokenizer::from_file(&tokenizer_json)
+            .map_err(|e| TaskError::ModelLoad(format!("Failed to load tokenizer.json: {e}")))
+    } else if vocab_txt.exists() {
+        info!("No tokenizer.json found, building WordPiece tokenizer from vocab.txt");
+        build_wordpiece_tokenizer(&vocab_txt)
+    } else if vocab_json.exists() {
+        info!("No tokenizer.json found, building BPE tokenizer from vocab.json");
+        build_bpe_tokenizer(&vocab_json, &merges_txt, model_dir)
+    } else {
+        Err(TaskError::ModelLoad(
+            "No tokenizer found: need tokenizer.json, vocab.txt, or vocab.json".into(),
+        ))
+    }
+}
+
+/// Build a BERT-compatible WordPiece tokenizer from `vocab.txt`.
+fn build_wordpiece_tokenizer(vocab_path: &Path) -> TaskResult<tokenizers::Tokenizer> {
+    use tokenizers::models::wordpiece::WordPiece;
+    use tokenizers::normalizers::bert::BertNormalizer;
+    use tokenizers::pre_tokenizers::bert::BertPreTokenizer;
+    use tokenizers::processors::bert::BertProcessing;
+    use tokenizers::{Model as TokenizerModel, Tokenizer};
+
+    let wp = WordPiece::from_file(&vocab_path.to_string_lossy())
+        .unk_token("[UNK]".to_string())
+        .continuing_subword_prefix("##".to_string())
+        .build()
+        .map_err(|e| TaskError::ModelLoad(format!("Failed to build WordPiece: {e}")))?;
+
+    let sep_id = wp.token_to_id("[SEP]").unwrap_or(102);
+    let cls_id = wp.token_to_id("[CLS]").unwrap_or(101);
+
+    let mut tokenizer = Tokenizer::new(wp);
+    tokenizer
+        .with_normalizer(Some(BertNormalizer::default()))
+        .with_pre_tokenizer(Some(BertPreTokenizer))
+        .with_post_processor(Some(BertProcessing::new(
+            ("[SEP]".to_string(), sep_id),
+            ("[CLS]".to_string(), cls_id),
+        )));
+
+    Ok(tokenizer)
+}
+
+/// Build a BPE tokenizer from `vocab.json` + optional `merges.txt`.
+///
+/// This handles GPT-2-style tokenizers (used by Qwen, GPT-2, RoBERTa, etc.)
+/// that ship only `vocab.json` and `merges.txt` without a `tokenizer.json`.
+/// Reads `tokenizer_config.json` for special token configuration if available.
+fn build_bpe_tokenizer(
+    vocab_path: &Path,
+    merges_path: &Path,
+    model_dir: &Path,
+) -> TaskResult<tokenizers::Tokenizer> {
+    use tokenizers::models::bpe::BPE;
+    use tokenizers::pre_tokenizers::byte_level::ByteLevel;
+    use tokenizers::Tokenizer;
+
+    let vocab_str = vocab_path.to_string_lossy();
+    let merges_str = merges_path.to_string_lossy();
+
+    let mut builder = BPE::from_file(&vocab_str, &merges_str);
+
+    // Read tokenizer_config.json for unk_token if available
+    let config_path = model_dir.join("tokenizer_config.json");
+    let unk_token = if config_path.exists() {
+        let content = std::fs::read_to_string(&config_path).unwrap_or_default();
+        let config: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
+        // unk_token can be a string or an object with "content" field
+        config["unk_token"]
+            .as_str()
+            .map(String::from)
+            .or_else(|| config["unk_token"]["content"].as_str().map(String::from))
+    } else {
+        None
+    };
+
+    if let Some(ref unk) = unk_token {
+        builder = builder.unk_token(unk.clone());
+    }
+
+    let bpe = builder.build().map_err(|e| {
+        TaskError::ModelLoad(format!(
+            "Failed to build BPE from vocab.json + merges.txt: {e}"
+        ))
+    })?;
+
+    let mut tokenizer = Tokenizer::new(bpe);
+    // GPT-2-style BPE uses byte-level pre-tokenization
+    tokenizer
+        .with_pre_tokenizer(Some(ByteLevel::default()))
+        .with_decoder(Some(ByteLevel::default()));
+
+    info!("Built BPE tokenizer from vocab.json + merges.txt");
+    Ok(tokenizer)
 }
 
 #[cfg(test)]

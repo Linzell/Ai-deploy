@@ -25,7 +25,7 @@ use tracing::info;
 use inference_onnx::{ClipTask, OnnxTask, PaddleOcrTask, Seq2SeqTask};
 
 #[cfg(feature = "candle")]
-use inference_candle::{CandleSeq2SeqTask, CandleTextGenTask, CandleTtsTask};
+use inference_candle::{CandleBartTask, CandleEncoderTask, CandleSeq2SeqTask, CandleTextGenTask, CandleTtsTask};
 
 #[cfg(feature = "llama")]
 use inference_llama::LlamaTextGenTask;
@@ -86,6 +86,8 @@ impl TaskRegistry {
         let use_llama = Self::should_use_llama(config);
         let use_candle_tts = Self::should_use_candle_tts(config);
         let use_candle_seq2seq = Self::should_use_candle_seq2seq(config);
+        let use_candle_bart = Self::should_use_candle_bart(config);
+        let use_candle_encoder = Self::should_use_candle_encoder(config);
         let use_candle = Self::should_use_candle(config);
         let use_clip = Self::should_use_clip(config);
         let use_paddle_ocr = Self::should_use_paddle_ocr(config);
@@ -96,6 +98,10 @@ impl TaskRegistry {
             Self::create_candle_tts_task(config, task_name).await
         } else if use_candle_seq2seq {
             Self::create_candle_seq2seq_task(config, task_name).await
+        } else if use_candle_bart {
+            Self::create_candle_bart_task(config, task_name).await
+        } else if use_candle_encoder {
+            Self::create_candle_encoder_task(config, task_name).await
         } else if use_candle {
             Self::create_candle_task(config, task_name).await
         } else if use_clip {
@@ -200,11 +206,90 @@ impl TaskRegistry {
                 #[cfg(feature = "candle")]
                 {
                     // Auto: prefer Candle for ASR (ONNX Whisper has KV-cache issues)
+                    // and for translation/summarization (T5/Marian run natively via Candle)
                     let s = config.task_type.as_str().to_lowercase().replace('-', "_");
-                    matches!(s.as_str(), "automatic_speech_recognition")
+                    matches!(
+                        s.as_str(),
+                        "automatic_speech_recognition" | "translation" | "summarization"
+                    )
                 }
                 #[cfg(not(feature = "candle"))]
                 {
+                    false
+                }
+            }
+        }
+    }
+
+    /// Determine if we should use Candle BART backend for seq2seq models
+    /// on encoder-only tasks (e.g. BART-MNLI for zero-shot-classification).
+    ///
+    /// This catches the case where a seq2seq architecture (BART, T5) is used
+    /// for a task that is normally encoder-only (zero-shot-classification,
+    /// text-classification, etc.). The encoder-only check would skip these
+    /// because `is_seq2seq_architecture()` filters them out.
+    fn should_use_candle_bart(config: &Config) -> bool {
+        // Only applies to encoder-only tasks where the backend is candle
+        if !config.task_type.is_encoder_only() {
+            return false;
+        }
+
+        match config.backend {
+            BackendType::Onnx | BackendType::Llama => false,
+            BackendType::Candle | BackendType::Auto => {
+                #[cfg(feature = "candle")]
+                {
+                    // Check if the model_path hints at a BART-family model.
+                    // The infer_backend() in hf_api.rs already routed seq2seq+encoder_only
+                    // to candle, so if we're here with backend=candle and an encoder-only
+                    // task, we need to check the model config to decide BART vs encoder.
+                    //
+                    // We use a heuristic: if config.json in the model dir has "d_model"
+                    // (BART-style) rather than "hidden_size" (BERT-style), use BART.
+                    // This is checked at task creation time, so we optimistically return
+                    // true here and let the task constructor validate.
+                    if let Some(ref model_path) = config.model_path {
+                        // For HuggingFace models, check if model ID contains known BART archs
+                        let lower = model_path.to_lowercase();
+                        return lower.contains("bart")
+                            || lower.contains("mnli")
+                            || lower.contains("nli");
+                    }
+                    false
+                }
+                #[cfg(not(feature = "candle"))]
+                {
+                    false
+                }
+            }
+        }
+    }
+
+    /// Determine if we should use Candle backend for encoder-only tasks
+    /// (BERT, RoBERTa, DistilBERT).
+    ///
+    /// Encoder tasks include: token-classification, text-classification,
+    /// fill-mask, feature-extraction, question-answering.
+    ///
+    /// These are single forward pass models that Candle can run directly from
+    /// safetensors, avoiding the need for ONNX exports.
+    fn should_use_candle_encoder(config: &Config) -> bool {
+        if !config.task_type.is_encoder_only() {
+            return false;
+        }
+
+        match config.backend {
+            BackendType::Onnx | BackendType::Llama => false,
+            BackendType::Candle | BackendType::Auto => {
+                #[cfg(feature = "candle")]
+                {
+                    true
+                }
+                #[cfg(not(feature = "candle"))]
+                {
+                    tracing::warn!(
+                        "Candle encoder backend requested but 'candle' feature not enabled"
+                    );
                     false
                 }
             }
@@ -421,10 +506,87 @@ impl TaskRegistry {
         ))
     }
 
+    /// Create a Candle-based encoder task (for BERT-family models).
+    ///
+    /// Supports:
+    /// - Token classification (NER, POS tagging)
+    /// - Text classification / sentiment analysis
+    /// - Fill-mask
+    /// - Feature extraction (embeddings)
+    /// - Question answering (extractive QA)
+    #[cfg(feature = "candle")]
+    async fn create_candle_encoder_task(
+        config: &Config,
+        task_name: String,
+    ) -> TaskResult<Box<dyn Task>> {
+        info!(
+            task_type = %config.task_type,
+            "Creating CandleEncoderTask"
+        );
+
+        // Get model directory with safetensors
+        let model_dir = Self::get_model_directory_for_candle(config).await?;
+
+        let task = CandleEncoderTask::from_model_dir(&model_dir, task_name, config)?;
+
+        Ok(Box::new(task))
+    }
+
+    #[cfg(not(feature = "candle"))]
+    #[allow(clippy::unused_async)]
+    async fn create_candle_encoder_task(
+        _config: &Config,
+        _task_name: String,
+    ) -> TaskResult<Box<dyn Task>> {
+        Err(TaskError::Config(
+            "Candle encoder backend requested but 'candle' feature is not enabled. \
+             Rebuild with: cargo build --features candle-metal  (macOS) \
+             or: cargo build --features candle-cuda  (Linux/NVIDIA)"
+                .into(),
+        ))
+    }
+
+    /// Create a Candle-based BART task for seq2seq models on classification tasks.
+    ///
+    /// Supports:
+    /// - BART-MNLI (zero-shot classification via NLI)
+    #[cfg(feature = "candle")]
+    async fn create_candle_bart_task(
+        config: &Config,
+        task_name: String,
+    ) -> TaskResult<Box<dyn Task>> {
+        info!(
+            task_type = %config.task_type,
+            "Creating CandleBartTask (seq2seq classification)"
+        );
+
+        // Get model directory with safetensors
+        let model_dir = Self::get_model_directory_for_candle(config).await?;
+
+        let task = CandleBartTask::from_model_dir(&model_dir, task_name, config)?;
+
+        Ok(Box::new(task))
+    }
+
+    #[cfg(not(feature = "candle"))]
+    #[allow(clippy::unused_async)]
+    async fn create_candle_bart_task(
+        _config: &Config,
+        _task_name: String,
+    ) -> TaskResult<Box<dyn Task>> {
+        Err(TaskError::Config(
+            "Candle BART backend requested but 'candle' feature is not enabled. \
+             Rebuild with: cargo build --features candle-metal  (macOS) \
+             or: cargo build --features candle-cuda  (Linux/NVIDIA)"
+                .into(),
+        ))
+    }
+
     /// Create a Candle-based TTS task.
     ///
     /// Supports:
     /// - Parler TTS (high-quality speech synthesis with voice descriptions)
+    /// - Qwen3 TTS (custom voice with speech tokenizer)
     #[cfg(feature = "candle")]
     async fn create_candle_tts_task(
         config: &Config,
@@ -437,6 +599,9 @@ impl TaskRegistry {
 
         // Get model directory with safetensors
         let model_dir = Self::get_model_directory_for_candle(config).await?;
+
+        // Check if model is Qwen3 TTS and needs speech_tokenizer subdir files
+        Self::maybe_download_speech_tokenizer(config, &model_dir).await?;
 
         let task = CandleTtsTask::from_model_dir(&model_dir, task_name, config)?;
 
@@ -452,6 +617,72 @@ impl TaskRegistry {
         Err(TaskError::Config(
             "Text-to-speech requires the 'candle' feature. Rebuild with: cargo build --features candle".into(),
         ))
+    }
+
+    /// If the model is Qwen3 TTS (model_type == "qwen3_tts"), download the
+    /// `speech_tokenizer/` subdirectory files needed for audio decoding.
+    ///
+    /// This is a no-op for non-HuggingFace sources or non-Qwen3 models.
+    async fn maybe_download_speech_tokenizer(
+        config: &Config,
+        model_dir: &std::path::Path,
+    ) -> TaskResult<()> {
+        // Only relevant for HuggingFace downloads
+        if config.model_source != DataSourceType::HuggingFace {
+            return Ok(());
+        }
+
+        // Read config.json to check model_type
+        let config_path = model_dir.join("config.json");
+        let config_content = std::fs::read_to_string(&config_path).map_err(|e| {
+            TaskError::ModelLoad(format!("Failed to read config.json: {e}"))
+        })?;
+        let config_json: serde_json::Value = serde_json::from_str(&config_content)
+            .map_err(|e| TaskError::ModelLoad(format!("Invalid config.json: {e}")))?;
+
+        let model_type = config_json
+            .get("model_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        if model_type != "qwen3_tts" {
+            return Ok(());
+        }
+
+        info!("Qwen3 TTS model detected — downloading speech_tokenizer/ files");
+
+        let model_path = config.model_path.as_ref().unwrap();
+        let loader = HfLoader::new(
+            model_path,
+            config.hf_token.clone(),
+            config.model_revision.clone(),
+        )
+        .await
+        .map_err(|e| {
+            TaskError::ModelLoad(format!("Failed to init HF loader for speech_tokenizer: {e}"))
+        })?;
+
+        // Download speech_tokenizer/model.safetensors (required for audio output)
+        match loader.get("speech_tokenizer/model.safetensors").await {
+            Ok(p) => info!(path = %p.display(), "Downloaded speech_tokenizer/model.safetensors"),
+            Err(e) => {
+                tracing::warn!(
+                    "Could not download speech_tokenizer/model.safetensors: {e}. \
+                     Audio output will be unavailable (codec tokens only)."
+                );
+                return Ok(());
+            }
+        }
+
+        // Download speech_tokenizer/config.json (optional — defaults used if absent)
+        match loader.get("speech_tokenizer/config.json").await {
+            Ok(p) => info!(path = %p.display(), "Downloaded speech_tokenizer/config.json"),
+            Err(_) => {
+                info!("speech_tokenizer/config.json not found, will use defaults");
+            }
+        }
+
+        Ok(())
     }
 
     /// Create an ONNX-based task (Seq2SeqTask or OnnxTask).
@@ -593,71 +824,78 @@ impl TaskRegistry {
                 })?;
                 info!(path = %config_path.display(), "Downloaded config.json");
 
-                // 2. tokenizer.json OR tekken.json (for Voxtral)
-                // Try tokenizer.json first, fall back to tekken.json for Voxtral models
-                let tokenizer_result = loader.get("tokenizer.json").await;
-                if let Ok(path) = tokenizer_result {
+                // 2. Tokenizer: try tokenizer.json -> tekken.json -> vocab.txt -> vocab.json+merges.txt
+                if let Ok(path) = loader.get("tokenizer.json").await {
                     info!(path = %path.display(), "Downloaded tokenizer.json");
+                } else if let Ok(path) = loader.get("tekken.json").await {
+                    info!(path = %path.display(), "Downloaded tekken.json (Voxtral tokenizer)");
+                } else if let Ok(path) = loader.get("vocab.txt").await {
+                    info!(path = %path.display(), "Downloaded vocab.txt (will build WordPiece tokenizer)");
+                } else if let Ok(path) = loader.get("vocab.json").await {
+                    info!(path = %path.display(), "Downloaded vocab.json (BPE tokenizer)");
+                    // BPE also needs merges.txt
+                    if let Ok(mp) = loader.get("merges.txt").await {
+                        info!(path = %mp.display(), "Downloaded merges.txt");
+                    }
+                    // Also grab tokenizer_config.json for special tokens
+                    if let Ok(tc) = loader.get("tokenizer_config.json").await {
+                        info!(path = %tc.display(), "Downloaded tokenizer_config.json");
+                    }
                 } else {
-                    // tokenizer.json not found, try tekken.json (for Voxtral)
-                    let tekken_path = loader.get("tekken.json").await.map_err(|e| {
-                        TaskError::ModelLoad(format!(
-                            "Failed to download tokenizer: no tokenizer.json or tekken.json found: {e}"
-                        ))
-                    })?;
-                    info!(path = %tekken_path.display(), "Downloaded tekken.json (Voxtral tokenizer)");
+                    return Err(TaskError::ModelLoad(
+                        "Failed to download tokenizer: no tokenizer.json, tekken.json, vocab.txt, or vocab.json found".into(),
+                    ));
                 }
 
-                // 3. safetensors files (required - try single file first, then sharded)
-                let safetensors_path = if let Ok(p) = loader.get("model.safetensors").await {
+                // 3. Weight files: try safetensors -> sharded safetensors -> pytorch_model.bin
+                let weight_path = if let Ok(p) = loader.get("model.safetensors").await {
+                    p
+                } else if let Ok(index_path) = loader.get("model.safetensors.index.json").await {
+                    // Parse index to get shard filenames
+                    let index_content = std::fs::read_to_string(&index_path).map_err(|e| {
+                        TaskError::ModelLoad(format!("Failed to read safetensors index: {e}"))
+                    })?;
+                    let index: serde_json::Value = serde_json::from_str(&index_content)
+                        .map_err(|e| {
+                            TaskError::ModelLoad(format!("Invalid safetensors index: {e}"))
+                        })?;
+
+                    // Get unique shard filenames
+                    let mut shard_files: Vec<String> = index
+                        .get("weight_map")
+                        .and_then(|v| v.as_object())
+                        .map(|m| {
+                            m.values()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    shard_files.sort();
+                    shard_files.dedup();
+
+                    // Download each shard
+                    for shard in &shard_files {
+                        loader.get(shard).await.map_err(|e| {
+                            TaskError::ModelLoad(format!("Failed to download {shard}: {e}"))
+                        })?;
+                    }
+                    info!(
+                        num_shards = shard_files.len(),
+                        "Downloaded sharded safetensors"
+                    );
+
+                    index_path
+                } else if let Ok(p) = loader.get("pytorch_model.bin").await {
+                    info!(path = %p.display(), "Downloaded pytorch_model.bin (legacy format)");
                     p
                 } else {
-                    // Try to get sharded files by downloading the index
-                    if let Ok(index_path) = loader.get("model.safetensors.index.json").await {
-                        // Parse index to get shard filenames
-                        let index_content = std::fs::read_to_string(&index_path).map_err(|e| {
-                            TaskError::ModelLoad(format!("Failed to read safetensors index: {e}"))
-                        })?;
-                        let index: serde_json::Value = serde_json::from_str(&index_content)
-                            .map_err(|e| {
-                                TaskError::ModelLoad(format!("Invalid safetensors index: {e}"))
-                            })?;
-
-                        // Get unique shard filenames
-                        let mut shard_files: Vec<String> = index
-                            .get("weight_map")
-                            .and_then(|v| v.as_object())
-                            .map(|m| {
-                                m.values()
-                                    .filter_map(|v| v.as_str().map(String::from))
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-                        shard_files.sort();
-                        shard_files.dedup();
-
-                        // Download each shard
-                        for shard in &shard_files {
-                            loader.get(shard).await.map_err(|e| {
-                                TaskError::ModelLoad(format!("Failed to download {shard}: {e}"))
-                            })?;
-                        }
-                        info!(
-                            num_shards = shard_files.len(),
-                            "Downloaded sharded safetensors"
-                        );
-
-                        index_path
-                    } else {
-                        return Err(TaskError::ModelLoad(
-                            "No safetensors files found (tried model.safetensors and sharded)"
-                                .into(),
-                        ));
-                    }
+                    return Err(TaskError::ModelLoad(
+                        "No weight files found (tried model.safetensors, sharded safetensors, and pytorch_model.bin)".into(),
+                    ));
                 };
 
                 // Return model directory (parent of downloaded files)
-                let model_dir = safetensors_path
+                let model_dir = weight_path
                     .parent()
                     .ok_or_else(|| TaskError::ModelLoad("Cannot get model directory".into()))?;
 
@@ -712,16 +950,23 @@ impl TaskRegistry {
                 if !path.join("config.json").exists() {
                     return Err(TaskError::ModelLoad("config.json not found".into()));
                 }
-                // Check for tokenizer.json OR tekken.json (for Voxtral)
-                if !path.join("tokenizer.json").exists() && !path.join("tekken.json").exists() {
+                // Check for tokenizer: tokenizer.json OR tekken.json OR vocab.txt OR vocab.json
+                if !path.join("tokenizer.json").exists()
+                    && !path.join("tekken.json").exists()
+                    && !path.join("vocab.txt").exists()
+                    && !path.join("vocab.json").exists()
+                {
                     return Err(TaskError::ModelLoad(
-                        "No tokenizer found: neither tokenizer.json nor tekken.json exists".into(),
+                        "No tokenizer found: neither tokenizer.json, tekken.json, vocab.txt, nor vocab.json exists".into(),
                     ));
                 }
                 if !path.join("model.safetensors").exists()
                     && !path.join("model.safetensors.index.json").exists()
+                    && !path.join("pytorch_model.bin").exists()
                 {
-                    return Err(TaskError::ModelLoad("No safetensors files found".into()));
+                    return Err(TaskError::ModelLoad(
+                        "No weight files found (need model.safetensors, sharded safetensors, or pytorch_model.bin)".into(),
+                    ));
                 }
                 Ok(path)
             }

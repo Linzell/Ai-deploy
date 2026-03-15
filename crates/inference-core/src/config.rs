@@ -119,6 +119,30 @@ impl TaskType {
         s == "text_to_speech"
     }
 
+    /// Check if this is an encoder-only task (single forward pass, no autoregressive loop).
+    ///
+    /// Currently limited to text-based encoder models (BERT, RoBERTa, DistilBERT):
+    /// - token-classification (NER, POS tagging)
+    /// - text-classification / sentiment-analysis
+    /// - fill-mask (masked language modeling)
+    /// - feature-extraction / sentence-similarity (embeddings)
+    /// - question-answering (extractive QA)
+    /// - zero-shot-classification
+    pub fn is_encoder_only(&self) -> bool {
+        let s = self.0.to_lowercase().replace('-', "_");
+        matches!(
+            s.as_str(),
+            "token_classification"
+                | "text_classification"
+                | "sentiment_analysis"
+                | "fill_mask"
+                | "feature_extraction"
+                | "sentence_similarity"
+                | "question_answering"
+                | "zero_shot_classification"
+        )
+    }
+
     /// Get the raw string value.
     pub fn as_str(&self) -> &str {
         &self.0

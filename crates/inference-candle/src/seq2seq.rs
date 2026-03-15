@@ -380,6 +380,16 @@ impl CandleSeq2SeqTask {
         // Seq2seq models (Whisper, T5) are typically small enough for F16 on CPU,
         // but we pass 0 for weight_size to let the threshold logic decide.
         let dtype = utils::resolve_compute_dtype(&gen_config.kv_cache, model_dtype, &device, 0);
+
+        // Whisper's sinusoidal positional embeddings are hardcoded to F32 in
+        // candle-transformers, so the entire encoder must run in F32 to avoid
+        // dtype mismatches in add ops.  Force F32 for Whisper models.
+        let dtype = if arch == Seq2SeqArch::Whisper {
+            info!(original_dtype = ?dtype, "Forcing F32 for Whisper (sinusoidal pos-embeds are F32)");
+            DType::F32
+        } else {
+            dtype
+        };
         info!(dtype = ?dtype, "Compute dtype (controls weights + KV cache)");
 
         // Load tokenizer and model based on architecture
@@ -428,9 +438,7 @@ impl CandleSeq2SeqTask {
 
     /// Load HuggingFace tokenizer from model directory.
     fn load_hf_tokenizer(model_dir: &Path) -> TaskResult<Tokenizer> {
-        let tokenizer_path = model_dir.join("tokenizer.json");
-        Tokenizer::from_file(&tokenizer_path)
-            .map_err(|e| TaskError::ModelLoad(format!("Failed to load tokenizer.json: {e}")))
+        utils::load_tokenizer(model_dir)
     }
 
     /// Load Whisper model.
@@ -804,6 +812,7 @@ impl CandleSeq2SeqTask {
             (1, config.num_mel_bins, mel_len / config.num_mel_bins),
             &self.device,
         )
+        .and_then(|t| t.to_dtype(self.dtype))
         .map_err(|e| TaskError::Inference(format!("Mel tensor error: {e}")))?;
 
         // Encode audio
@@ -1042,6 +1051,15 @@ impl CandleSeq2SeqTask {
     fn sample_token(&self, logits: &Tensor, rng: &mut rand::rngs::StdRng) -> TaskResult<u32> {
         let temperature = self.gen_config.temperature;
 
+        // Squeeze batch dimension if present: [1, vocab] -> [vocab]
+        let logits = if logits.rank() == 2 {
+            logits
+                .squeeze(0)
+                .map_err(|e| TaskError::Inference(format!("Squeeze error: {e}")))?
+        } else {
+            logits.clone()
+        };
+
         if temperature <= 0.0 {
             // Greedy decoding
             let logits_v: Vec<f32> = logits
@@ -1055,7 +1073,7 @@ impl CandleSeq2SeqTask {
             Ok(next_token)
         } else {
             // Temperature sampling
-            let scaled = (logits / temperature)
+            let scaled = (&logits / temperature)
                 .map_err(|e| TaskError::Inference(format!("Scale error: {e}")))?;
             let probs = candle_nn::ops::softmax(&scaled, 0)
                 .map_err(|e| TaskError::Inference(format!("Softmax error: {e}")))?;

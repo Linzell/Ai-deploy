@@ -17,12 +17,18 @@
 //! Most modern LLMs (Qwen3, Llama 3.x, Mistral v0.3+) don't have official ONNX exports.
 //! Candle loads safetensors directly and supports Metal/CUDA acceleration.
 
+#[allow(clippy::needless_pass_by_value, clippy::match_same_arms)]
+mod bart;
+mod encoder;
 mod error;
+pub mod qwen3_tts;
 mod seq2seq;
 mod text_gen;
 mod tts;
 mod utils;
 
+pub use bart::{CandleBartInput, CandleBartTask};
+pub use encoder::{CandleEncoderInput, CandleEncoderOutput, CandleEncoderTask, EncoderTaskKind};
 pub use error::{TaskError, TaskResult};
 pub use seq2seq::{
     CandleSeq2SeqInput, CandleSeq2SeqOutput, CandleSeq2SeqTask, Seq2SeqArch, Seq2SeqGenConfig,

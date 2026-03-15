@@ -89,9 +89,16 @@ impl HfModelInfo {
             .any(|f| has_extension(&f.filename, "gguf"))
     }
 
+    /// Check if the repo contains PyTorch bin files (legacy format).
+    pub fn has_pytorch_bin(&self) -> bool {
+        self.siblings
+            .iter()
+            .any(|f| f.filename == "pytorch_model.bin" || has_extension(&f.filename, "bin"))
+    }
+
     /// Returns true if the model has at least one supported weight format.
     pub fn has_supported_files(&self) -> bool {
-        self.has_safetensors() || self.has_onnx() || self.has_gguf()
+        self.has_safetensors() || self.has_onnx() || self.has_gguf() || self.has_pytorch_bin()
     }
 
     /// Find the first ONNX model file in the repo.
@@ -159,14 +166,33 @@ impl HfModelInfo {
         size > threshold_bytes
     }
 
+    /// Check if the model's tags indicate a seq2seq (encoder-decoder) architecture.
+    ///
+    /// Some tasks like `zero-shot-classification` can be implemented by either
+    /// encoder-only models (BERT + classifier) or encoder-decoder models (BART NLI).
+    /// This check prevents routing seq2seq models into the encoder-only pipeline.
+    pub fn is_seq2seq_architecture(&self) -> bool {
+        const SEQ2SEQ_ARCHS: &[&str] = &[
+            "bart", "mbart", "t5", "mt5", "pegasus", "marian", "led",
+            "longt5", "bigbird_pegasus", "blenderbot", "fsmt", "prophetnet",
+            "plbart", "mvp", "nllb",
+        ];
+        self.tags.iter().any(|t| {
+            let lower = t.to_lowercase();
+            SEQ2SEQ_ARCHS.iter().any(|arch| lower == *arch)
+        })
+    }
+
     /// Infer the best backend based on available files and pipeline_tag.
     ///
     /// Returns (backend_str, onnx_file, gguf_file).
     ///
-    /// Candle is only returned for tasks it actually supports:
+    /// Candle is returned for tasks it supports natively:
     /// - `text-generation` (decoder-only)
     /// - `automatic-speech-recognition` (encoder-decoder, Whisper)
     /// - `text-to-speech` (encoder-decoder, Parler TTS)
+    /// - Encoder-only tasks: `token-classification`, `text-classification`,
+    ///   `fill-mask`, `feature-extraction`, `question-answering`, etc.
     ///
     /// For all other tasks, ONNX is preferred. If the model has safetensors
     /// but no ONNX files for a non-Candle task, we return `"onnx"` with no
@@ -179,13 +205,32 @@ impl HfModelInfo {
         }
 
         let tag = self.pipeline_tag.as_deref().unwrap_or("");
-        let candle_supported = matches!(
+
+        // Tasks Candle supports via decoder/seq2seq backends
+        let candle_gen_supported = matches!(
             tag,
-            "text-generation" | "automatic-speech-recognition" | "text-to-speech"
+            "text-generation"
+                | "automatic-speech-recognition"
+                | "text-to-speech"
+                | "translation"
+                | "summarization"
         );
 
+        // Tasks Candle supports via encoder backend (BERT-family)
+        let task_type = inference_core::TaskType::new(tag);
+        let candle_encoder_supported = task_type.is_encoder_only() && !self.is_seq2seq_architecture();
+
+        // Seq2seq models (BART/T5) on encoder-only tasks (e.g. zero-shot-classification)
+        // → route to candle BART task instead of blocking
+        let candle_bart_supported = task_type.is_encoder_only() && self.is_seq2seq_architecture();
+
         // Safetensors + Candle-supported task -> candle
-        if candle_supported && self.has_safetensors() {
+        if (candle_gen_supported || candle_encoder_supported || candle_bart_supported) && self.has_safetensors() {
+            return ("candle", None, None);
+        }
+
+        // PyTorch bin + encoder task -> candle (VarBuilder::from_pth can load .bin)
+        if candle_encoder_supported && self.has_pytorch_bin() {
             return ("candle", None, None);
         }
 
@@ -265,10 +310,19 @@ pub static TASK_FAMILIES: &[TaskFamily] = &[
     },
 ];
 
+/// Tags that indicate a model has usable weight files.
+const SUPPORTED_TAGS: &[&str] = &["transformers", "safetensors", "onnx", "gguf"];
+
 /// Query HuggingFace API for popular models with a given pipeline_tag.
+///
+/// Results are post-filtered to exclude models without supported weight formats
+/// (e.g. pyannote pipeline-only models that have no .safetensors/.onnx/.gguf files).
 pub async fn search_models(task: &str, limit: usize) -> anyhow::Result<Vec<HfModelSummary>> {
-    let url =
-        format!("{HF_API_BASE}?pipeline_tag={task}&sort=downloads&direction=-1&limit={limit}");
+    // Over-fetch to compensate for filtering out unsupported models.
+    let fetch_limit = (limit * 2).max(30);
+    let url = format!(
+        "{HF_API_BASE}?pipeline_tag={task}&sort=downloads&direction=-1&limit={fetch_limit}"
+    );
 
     let client = reqwest::Client::new();
     let resp = client
@@ -285,7 +339,19 @@ pub async fn search_models(task: &str, limit: usize) -> anyhow::Result<Vec<HfMod
         );
     }
 
-    let models: Vec<HfModelSummary> = resp.json().await?;
+    let all: Vec<HfModelSummary> = resp.json().await?;
+
+    // Keep only models that have at least one supported weight-format tag.
+    let models: Vec<HfModelSummary> = all
+        .into_iter()
+        .filter(|m| {
+            m.tags
+                .iter()
+                .any(|t| SUPPORTED_TAGS.contains(&t.as_str()))
+        })
+        .take(limit)
+        .collect();
+
     Ok(models)
 }
 

@@ -272,9 +272,7 @@ impl CandleTextGenTask {
         );
 
         // Load tokenizer
-        let tokenizer_path = model_dir.join("tokenizer.json");
-        let tokenizer = Tokenizer::from_file(&tokenizer_path)
-            .map_err(|e| TaskError::ModelLoad(format!("Failed to load tokenizer: {e}")))?;
+        let tokenizer = utils::load_tokenizer(model_dir)?;
         info!("Tokenizer loaded");
 
         // Build generation config first — we need kv_cache settings to pick dtype
