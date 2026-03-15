@@ -76,12 +76,9 @@ fn decode_wav_bytes(data: &[u8]) -> TaskResult<(Vec<f32>, u32)> {
 
     while pos + 8 <= data.len() {
         let chunk_id = &data[pos..pos + 4];
-        let chunk_size = u32::from_le_bytes([
-            data[pos + 4],
-            data[pos + 5],
-            data[pos + 6],
-            data[pos + 7],
-        ]) as usize;
+        let chunk_size =
+            u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]])
+                as usize;
 
         if chunk_id == b"fmt " && pos + 8 + chunk_size <= data.len() {
             let fmt = &data[pos + 8..pos + 8 + chunk_size];
@@ -247,9 +244,14 @@ impl CandleAudioClassifierTask {
 
         match model_type {
             "clap" => Self::load_clap(model_dir, name, config, &config_content, &device),
-            "wav2vec2" | "hubert" | "unispeech" | "unispeech-sat" => {
-                Self::load_wav2vec2(model_dir, name, config, &config_content, &model_json, &device)
-            }
+            "wav2vec2" | "hubert" | "unispeech" | "unispeech-sat" => Self::load_wav2vec2(
+                model_dir,
+                name,
+                config,
+                &config_content,
+                &model_json,
+                &device,
+            ),
             other => Err(TaskError::ModelLoad(format!(
                 "Unsupported audio classification architecture: '{other}'. \
                  Supported: wav2vec2, hubert, unispeech, clap."
@@ -298,7 +300,11 @@ impl CandleAudioClassifierTask {
         let is_pytorch = utils::is_pytorch_bin(&weight_files);
         info!(
             num_files = weight_files.len(),
-            format = if is_pytorch { "pytorch_model.bin" } else { "safetensors" },
+            format = if is_pytorch {
+                "pytorch_model.bin"
+            } else {
+                "safetensors"
+            },
             "Found weight files"
         );
 
@@ -356,7 +362,11 @@ impl CandleAudioClassifierTask {
         let is_pytorch = utils::is_pytorch_bin(&weight_files);
         info!(
             num_files = weight_files.len(),
-            format = if is_pytorch { "pytorch_model.bin" } else { "safetensors" },
+            format = if is_pytorch {
+                "pytorch_model.bin"
+            } else {
+                "safetensors"
+            },
             "Found weight files"
         );
 
@@ -412,9 +422,7 @@ impl CandleAudioClassifierTask {
             .as_ref()
             .or(input.audio.as_ref())
             .ok_or_else(|| {
-                TaskError::InvalidInput(
-                    "Missing 'inputs' or 'audio' field in request".into(),
-                )
+                TaskError::InvalidInput("Missing 'inputs' or 'audio' field in request".into())
             })?;
 
         match value {
@@ -515,10 +523,7 @@ impl CandleAudioClassifierTask {
     }
 
     /// Format CLAP zero-shot scores into classification results.
-    fn format_clap_output(
-        labels: &[String],
-        scores: &[f32],
-    ) -> serde_json::Value {
+    fn format_clap_output(labels: &[String], scores: &[f32]) -> serde_json::Value {
         let mut results: Vec<serde_json::Value> = labels
             .iter()
             .zip(scores.iter())
@@ -560,10 +565,26 @@ fn wrap_outputs(key: &str, value: serde_json::Value) -> serde_json::Value {
 /// Covers common AudioSet categories. Users can override via request payload.
 fn default_audio_labels() -> Vec<String> {
     [
-        "Speech", "Music", "Silence", "Dog", "Cat", "Bird",
-        "Vehicle", "Alarm", "Laughter", "Crying", "Footsteps",
-        "Water", "Wind", "Thunder", "Gunshot", "Siren", "Applause",
-        "Knock", "Cough", "Snoring",
+        "Speech",
+        "Music",
+        "Silence",
+        "Dog",
+        "Cat",
+        "Bird",
+        "Vehicle",
+        "Alarm",
+        "Laughter",
+        "Crying",
+        "Footsteps",
+        "Water",
+        "Wind",
+        "Thunder",
+        "Gunshot",
+        "Siren",
+        "Applause",
+        "Knock",
+        "Cough",
+        "Snoring",
     ]
     .iter()
     .map(std::string::ToString::to_string)
@@ -589,9 +610,7 @@ impl Task for CandleAudioClassifierTask {
         };
 
         match &self.backend {
-            AudioModelBackend::Wav2Vec2(model) => {
-                self.execute_wav2vec2(model, &input)
-            }
+            AudioModelBackend::Wav2Vec2(model) => self.execute_wav2vec2(model, &input),
             AudioModelBackend::Clap {
                 model,
                 tokenizer,
@@ -612,14 +631,7 @@ impl Task for CandleAudioClassifierTask {
                     });
                 let labels = user_labels.as_deref().unwrap_or(candidate_labels);
 
-                self.execute_clap(
-                    model,
-                    tokenizer,
-                    labels,
-                    mel_filters,
-                    *num_mel_bins,
-                    &input,
-                )
+                self.execute_clap(model, tokenizer, labels, mel_filters, *num_mel_bins, &input)
             }
         }
     }
@@ -689,7 +701,8 @@ impl CandleAudioClassifierTask {
         debug!(num_samples = samples.len(), "Audio parsed (CLAP)");
 
         // Convert to mel spectrogram: output is [1, 1, time_frames, num_mel_bins]
-        let mel = match clap_mel::waveform_to_mel(&samples, num_mel_bins, mel_filters, &self.device) {
+        let mel = match clap_mel::waveform_to_mel(&samples, num_mel_bins, mel_filters, &self.device)
+        {
             Ok(m) => m,
             Err(e) => return GrpcTaskResult::err(format!("Mel spectrogram: {e}")),
         };
@@ -731,7 +744,11 @@ fn tokenize_labels(
         .collect::<TaskResult<_>>()?;
 
     // Find max length and pad
-    let max_len = encodings.iter().map(|e| e.get_ids().len()).max().unwrap_or(0);
+    let max_len = encodings
+        .iter()
+        .map(|e| e.get_ids().len())
+        .max()
+        .unwrap_or(0);
 
     let mut all_ids = Vec::with_capacity(labels.len() * max_len);
     for enc in &encodings {
