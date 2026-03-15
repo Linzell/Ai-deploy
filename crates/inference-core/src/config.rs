@@ -143,6 +143,12 @@ impl TaskType {
         )
     }
 
+    /// Check if this is an audio classification task.
+    pub fn is_audio_classification(&self) -> bool {
+        let s = self.0.to_lowercase().replace('-', "_");
+        s == "audio_classification"
+    }
+
     /// Get the raw string value.
     pub fn as_str(&self) -> &str {
         &self.0

@@ -195,6 +195,22 @@ impl HfModelInfo {
         })
     }
 
+    /// Check if this model uses an audio classification architecture supported by candle.
+    pub fn is_candle_audio_architecture(&self) -> bool {
+        const AUDIO_ARCHS: &[&str] = &[
+            "wav2vec2",
+            "hubert",
+            "wav2vec2-conformer",
+            "unispeech",
+            "unispeech-sat",
+            "clap",
+        ];
+        self.tags.iter().any(|t| {
+            let lower = t.to_lowercase();
+            AUDIO_ARCHS.iter().any(|arch| lower == *arch)
+        })
+    }
+
     /// Infer the best backend based on available files and pipeline_tag.
     ///
     /// Returns (backend_str, onnx_file, gguf_file).
@@ -237,15 +253,22 @@ impl HfModelInfo {
         // → route to candle BART task instead of blocking
         let candle_bart_supported = task_type.is_encoder_only() && self.is_seq2seq_architecture();
 
+        // Audio classification (Wav2Vec2, HuBERT, CLAP) → candle audio classifier
+        let candle_audio_supported =
+            task_type.is_audio_classification() && self.is_candle_audio_architecture();
+
         // Safetensors + Candle-supported task -> candle
-        if (candle_gen_supported || candle_encoder_supported || candle_bart_supported)
+        if (candle_gen_supported
+            || candle_encoder_supported
+            || candle_bart_supported
+            || candle_audio_supported)
             && self.has_safetensors()
         {
             return ("candle", None, None);
         }
 
         // PyTorch bin + encoder task -> candle (VarBuilder::from_pth can load .bin)
-        if candle_encoder_supported && self.has_pytorch_bin() {
+        if (candle_encoder_supported || candle_audio_supported) && self.has_pytorch_bin() {
             return ("candle", None, None);
         }
 

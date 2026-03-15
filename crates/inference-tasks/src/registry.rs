@@ -26,7 +26,8 @@ use inference_onnx::{ClipTask, OnnxTask, PaddleOcrTask, Seq2SeqTask};
 
 #[cfg(feature = "candle")]
 use inference_candle::{
-    CandleBartTask, CandleEncoderTask, CandleSeq2SeqTask, CandleTextGenTask, CandleTtsTask,
+    CandleAudioClassifierTask, CandleBartTask, CandleEncoderTask, CandleSeq2SeqTask,
+    CandleTextGenTask, CandleTtsTask,
 };
 
 #[cfg(feature = "llama")]
@@ -89,6 +90,7 @@ impl TaskRegistry {
         let use_candle_tts = Self::should_use_candle_tts(config);
         let use_candle_seq2seq = Self::should_use_candle_seq2seq(config);
         let use_candle_bart = Self::should_use_candle_bart(config);
+        let use_candle_audio_classifier = Self::should_use_candle_audio_classifier(config);
         let use_candle_encoder = Self::should_use_candle_encoder(config);
         let use_candle = Self::should_use_candle(config);
         let use_clip = Self::should_use_clip(config);
@@ -102,6 +104,8 @@ impl TaskRegistry {
             Self::create_candle_seq2seq_task(config, task_name).await
         } else if use_candle_bart {
             Self::create_candle_bart_task(config, task_name).await
+        } else if use_candle_audio_classifier {
+            Self::create_candle_audio_classifier_task(config, task_name).await
         } else if use_candle_encoder {
             Self::create_candle_encoder_task(config, task_name).await
         } else if use_candle {
@@ -291,6 +295,34 @@ impl TaskRegistry {
                 {
                     tracing::warn!(
                         "Candle encoder backend requested but 'candle' feature not enabled"
+                    );
+                    false
+                }
+            }
+        }
+    }
+
+    /// Determine if we should use Candle backend for audio classification tasks
+    /// (Wav2Vec2, HuBERT, CLAP).
+    ///
+    /// Audio classification models typically only have safetensors — no ONNX.
+    /// Candle runs the full Wav2Vec2/HuBERT/CLAP encoder natively.
+    fn should_use_candle_audio_classifier(config: &Config) -> bool {
+        if !config.task_type.is_audio_classification() {
+            return false;
+        }
+
+        match config.backend {
+            BackendType::Onnx | BackendType::Llama => false,
+            BackendType::Candle | BackendType::Auto => {
+                #[cfg(feature = "candle")]
+                {
+                    true
+                }
+                #[cfg(not(feature = "candle"))]
+                {
+                    tracing::warn!(
+                        "Candle audio classifier backend requested but 'candle' feature not enabled"
                     );
                     false
                 }
@@ -542,6 +574,37 @@ impl TaskRegistry {
     ) -> TaskResult<Box<dyn Task>> {
         Err(TaskError::Config(
             "Candle encoder backend requested but 'candle' feature is not enabled. \
+             Rebuild with: cargo build --features candle-metal  (macOS) \
+             or: cargo build --features candle-cuda  (Linux/NVIDIA)"
+                .into(),
+        ))
+    }
+
+    /// Create a Candle-based audio classification task (Wav2Vec2, HuBERT, CLAP).
+    #[cfg(feature = "candle")]
+    async fn create_candle_audio_classifier_task(
+        config: &Config,
+        task_name: String,
+    ) -> TaskResult<Box<dyn Task>> {
+        info!(
+            task_type = %config.task_type,
+            "Creating CandleAudioClassifierTask"
+        );
+
+        let model_dir = Self::get_model_directory_for_candle(config).await?;
+        let task = CandleAudioClassifierTask::from_model_dir(&model_dir, task_name, config)?;
+
+        Ok(Box::new(task))
+    }
+
+    #[cfg(not(feature = "candle"))]
+    #[allow(clippy::unused_async)]
+    async fn create_candle_audio_classifier_task(
+        _config: &Config,
+        _task_name: String,
+    ) -> TaskResult<Box<dyn Task>> {
+        Err(TaskError::Config(
+            "Candle audio classifier backend requested but 'candle' feature is not enabled. \
              Rebuild with: cargo build --features candle-metal  (macOS) \
              or: cargo build --features candle-cuda  (Linux/NVIDIA)"
                 .into(),
@@ -828,6 +891,8 @@ impl TaskRegistry {
                 info!(path = %config_path.display(), "Downloaded config.json");
 
                 // 2. Tokenizer: try tokenizer.json -> tekken.json -> vocab.txt -> vocab.json+merges.txt
+                //    Not all models need a tokenizer (e.g. audio classification uses raw waveforms),
+                //    so we warn instead of erroring when no tokenizer is found.
                 if let Ok(path) = loader.get("tokenizer.json").await {
                     info!(path = %path.display(), "Downloaded tokenizer.json");
                 } else if let Ok(path) = loader.get("tekken.json").await {
@@ -845,9 +910,9 @@ impl TaskRegistry {
                         info!(path = %tc.display(), "Downloaded tokenizer_config.json");
                     }
                 } else {
-                    return Err(TaskError::ModelLoad(
-                        "Failed to download tokenizer: no tokenizer.json, tekken.json, vocab.txt, or vocab.json found".into(),
-                    ));
+                    tracing::debug!(
+                        "No tokenizer found — this is expected for audio models that don't use text tokenization"
+                    );
                 }
 
                 // 3. Weight files: try safetensors -> sharded safetensors -> pytorch_model.bin

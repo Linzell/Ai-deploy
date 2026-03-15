@@ -12,6 +12,9 @@
 //! Zero-shot approach: for each candidate label, form the hypothesis
 //! `"This example is {label}."`, run encoder-decoder, take entailment score.
 
+// VarBuilder is an Arc-based handle — passing by value is the intended Candle API.
+#![allow(clippy::needless_pass_by_value)]
+
 use crate::error::{TaskError, TaskResult};
 use crate::utils;
 use async_trait::async_trait;

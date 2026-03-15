@@ -18,6 +18,7 @@
 //! Candle loads safetensors directly and supports Metal/CUDA acceleration.
 
 #[allow(clippy::needless_pass_by_value, clippy::match_same_arms)]
+pub mod audio_classification;
 mod bart;
 mod encoder;
 mod error;
@@ -27,6 +28,7 @@ mod text_gen;
 mod tts;
 mod utils;
 
+pub use audio_classification::CandleAudioClassifierTask;
 pub use bart::{CandleBartInput, CandleBartTask};
 pub use encoder::{CandleEncoderInput, CandleEncoderOutput, CandleEncoderTask, EncoderTaskKind};
 pub use error::{TaskError, TaskResult};
