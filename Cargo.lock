@@ -2859,6 +2859,7 @@ dependencies = [
  "candle-transformers",
  "futures",
  "hound",
+ "image",
  "inference-core",
  "rand 0.8.5",
  "safetensors 0.7.0",

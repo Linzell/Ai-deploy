@@ -22,6 +22,8 @@ pub mod audio_classification;
 mod bart;
 mod encoder;
 mod error;
+pub mod image_to_text;
+pub mod object_detection;
 pub mod qwen3_tts;
 mod seq2seq;
 mod text_gen;
@@ -32,6 +34,8 @@ pub use audio_classification::CandleAudioClassifierTask;
 pub use bart::{CandleBartInput, CandleBartTask};
 pub use encoder::{CandleEncoderInput, CandleEncoderOutput, CandleEncoderTask, EncoderTaskKind};
 pub use error::{TaskError, TaskResult};
+pub use image_to_text::CandleImageToTextTask;
+pub use object_detection::CandleObjectDetectionTask;
 pub use seq2seq::{
     CandleSeq2SeqInput, CandleSeq2SeqOutput, CandleSeq2SeqTask, Seq2SeqArch, Seq2SeqGenConfig,
     Seq2SeqTokenizer,

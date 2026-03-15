@@ -211,6 +211,24 @@ impl HfModelInfo {
         })
     }
 
+    /// Check if this model uses a DETR-family object detection architecture supported by candle.
+    pub fn is_candle_object_detection_architecture(&self) -> bool {
+        const OD_ARCHS: &[&str] = &["detr", "table-transformer"];
+        self.tags.iter().any(|t| {
+            let lower = t.to_lowercase();
+            OD_ARCHS.iter().any(|arch| lower == *arch)
+        })
+    }
+
+    /// Check if this model uses a BLIP-family image-to-text architecture supported by candle.
+    pub fn is_candle_image_to_text_architecture(&self) -> bool {
+        const ITT_ARCHS: &[&str] = &["blip"];
+        self.tags.iter().any(|t| {
+            let lower = t.to_lowercase();
+            ITT_ARCHS.iter().any(|arch| lower == *arch)
+        })
+    }
+
     /// Infer the best backend based on available files and pipeline_tag.
     ///
     /// Returns (backend_str, onnx_file, gguf_file).
@@ -219,6 +237,7 @@ impl HfModelInfo {
     /// - `text-generation` (decoder-only)
     /// - `automatic-speech-recognition` (encoder-decoder, Whisper)
     /// - `text-to-speech` (encoder-decoder, Parler TTS)
+    /// - `image-to-text` (BLIP image captioning)
     /// - Encoder-only tasks: `token-classification`, `text-classification`,
     ///   `fill-mask`, `feature-extraction`, `question-answering`, etc.
     ///
@@ -257,11 +276,21 @@ impl HfModelInfo {
         let candle_audio_supported =
             task_type.is_audio_classification() && self.is_candle_audio_architecture();
 
+        // Object detection (DETR, Table-Transformer) → candle object detection
+        let candle_object_detection_supported =
+            task_type.is_object_detection() && self.is_candle_object_detection_architecture();
+
+        // Image-to-text (BLIP captioning) → candle image-to-text
+        let candle_image_to_text_supported =
+            task_type.is_image_to_text() && self.is_candle_image_to_text_architecture();
+
         // Safetensors + Candle-supported task -> candle
         if (candle_gen_supported
             || candle_encoder_supported
             || candle_bart_supported
-            || candle_audio_supported)
+            || candle_audio_supported
+            || candle_object_detection_supported
+            || candle_image_to_text_supported)
             && self.has_safetensors()
         {
             return ("candle", None, None);
@@ -280,6 +309,12 @@ impl HfModelInfo {
         // Safetensors but task not supported by Candle -> need ONNX
         // Return "onnx" so the caller knows to search for an ONNX variant.
         if self.has_safetensors() {
+            return ("onnx", None, None);
+        }
+
+        // PyTorch bin only, task not supported by Candle -> need ONNX
+        // (e.g. openai/clip-vit-base-patch32 has only pytorch_model.bin)
+        if self.has_pytorch_bin() {
             return ("onnx", None, None);
         }
 
@@ -491,6 +526,26 @@ pub async fn find_compatible_variant(model_id: &str) -> anyhow::Result<Option<Hf
                 if info.has_supported_files() {
                     return Ok(Some(info));
                 }
+            }
+        }
+    }
+
+    // Fallback: try well-known ONNX export communities that use the naming
+    // convention `{community}/{org}_{model}` (e.g. `Xenova/openai_clip-vit-base-patch32`,
+    // `onnx-community/Salesforce_blip-image-captioning-base`).
+    let well_known_prefixes = ["Xenova", "onnx-community"];
+    let variant_suffix = model_id.replace('/', "_");
+
+    for prefix in &well_known_prefixes {
+        let candidate_id = format!("{prefix}/{variant_suffix}");
+        if let Ok(info) = get_model_info(&candidate_id).await {
+            if info.has_supported_files() {
+                tracing::info!(
+                    original = model_id,
+                    variant = %candidate_id,
+                    "Found variant via well-known ONNX community"
+                );
+                return Ok(Some(info));
             }
         }
     }

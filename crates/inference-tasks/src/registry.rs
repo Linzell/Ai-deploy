@@ -26,8 +26,8 @@ use inference_onnx::{ClipTask, OnnxTask, PaddleOcrTask, Seq2SeqTask};
 
 #[cfg(feature = "candle")]
 use inference_candle::{
-    CandleAudioClassifierTask, CandleBartTask, CandleEncoderTask, CandleSeq2SeqTask,
-    CandleTextGenTask, CandleTtsTask,
+    CandleAudioClassifierTask, CandleBartTask, CandleEncoderTask, CandleImageToTextTask,
+    CandleObjectDetectionTask, CandleSeq2SeqTask, CandleTextGenTask, CandleTtsTask,
 };
 
 #[cfg(feature = "llama")]
@@ -92,6 +92,8 @@ impl TaskRegistry {
         let use_candle_bart = Self::should_use_candle_bart(config);
         let use_candle_audio_classifier = Self::should_use_candle_audio_classifier(config);
         let use_candle_encoder = Self::should_use_candle_encoder(config);
+        let use_candle_object_detection = Self::should_use_candle_object_detection(config);
+        let use_candle_image_to_text = Self::should_use_candle_image_to_text(config);
         let use_candle = Self::should_use_candle(config);
         let use_clip = Self::should_use_clip(config);
         let use_paddle_ocr = Self::should_use_paddle_ocr(config);
@@ -108,6 +110,10 @@ impl TaskRegistry {
             Self::create_candle_audio_classifier_task(config, task_name).await
         } else if use_candle_encoder {
             Self::create_candle_encoder_task(config, task_name).await
+        } else if use_candle_object_detection {
+            Self::create_candle_object_detection_task(config, task_name).await
+        } else if use_candle_image_to_text {
+            Self::create_candle_image_to_text_task(config, task_name).await
         } else if use_candle {
             Self::create_candle_task(config, task_name).await
         } else if use_clip {
@@ -186,6 +192,11 @@ impl TaskRegistry {
     fn should_use_candle_seq2seq(config: &Config) -> bool {
         // TTS is handled separately
         if config.task_type.is_tts() {
+            return false;
+        }
+
+        // Image-to-text (BLIP) is handled by the dedicated image-to-text backend
+        if config.task_type.is_image_to_text() {
             return false;
         }
 
@@ -323,6 +334,62 @@ impl TaskRegistry {
                 {
                     tracing::warn!(
                         "Candle audio classifier backend requested but 'candle' feature not enabled"
+                    );
+                    false
+                }
+            }
+        }
+    }
+
+    /// Determine if we should use Candle backend for object detection tasks
+    /// (DETR, Table-Transformer).
+    ///
+    /// Object detection models (DETR-family) typically only have safetensors — no ONNX.
+    /// Candle runs the full DETR pipeline natively (ResNet + Transformer + detection heads).
+    fn should_use_candle_object_detection(config: &Config) -> bool {
+        if !config.task_type.is_object_detection() {
+            return false;
+        }
+
+        match config.backend {
+            BackendType::Onnx | BackendType::Llama => false,
+            BackendType::Candle | BackendType::Auto => {
+                #[cfg(feature = "candle")]
+                {
+                    true
+                }
+                #[cfg(not(feature = "candle"))]
+                {
+                    tracing::warn!(
+                        "Candle object detection backend requested but 'candle' feature not enabled"
+                    );
+                    false
+                }
+            }
+        }
+    }
+
+    /// Determine if we should use Candle backend for image-to-text tasks (BLIP captioning).
+    ///
+    /// BLIP models typically only have safetensors/pytorch_model.bin — ONNX exports
+    /// are incomplete (missing tokenizer/config). Candle runs the full BLIP pipeline
+    /// natively (ViT encoder + text decoder with autoregressive generation).
+    fn should_use_candle_image_to_text(config: &Config) -> bool {
+        if !config.task_type.is_image_to_text() {
+            return false;
+        }
+
+        match config.backend {
+            BackendType::Onnx | BackendType::Llama => false,
+            BackendType::Candle | BackendType::Auto => {
+                #[cfg(feature = "candle")]
+                {
+                    true
+                }
+                #[cfg(not(feature = "candle"))]
+                {
+                    tracing::warn!(
+                        "Candle image-to-text backend requested but 'candle' feature not enabled"
                     );
                     false
                 }
@@ -605,6 +672,68 @@ impl TaskRegistry {
     ) -> TaskResult<Box<dyn Task>> {
         Err(TaskError::Config(
             "Candle audio classifier backend requested but 'candle' feature is not enabled. \
+             Rebuild with: cargo build --features candle-metal  (macOS) \
+             or: cargo build --features candle-cuda  (Linux/NVIDIA)"
+                .into(),
+        ))
+    }
+
+    /// Create a Candle-based object detection task (DETR, Table-Transformer).
+    #[cfg(feature = "candle")]
+    async fn create_candle_object_detection_task(
+        config: &Config,
+        task_name: String,
+    ) -> TaskResult<Box<dyn Task>> {
+        info!(
+            task_type = %config.task_type,
+            "Creating CandleObjectDetectionTask"
+        );
+
+        let model_dir = Self::get_model_directory_for_candle(config).await?;
+        let task = CandleObjectDetectionTask::from_model_dir(&model_dir, task_name, config)?;
+
+        Ok(Box::new(task))
+    }
+
+    #[cfg(not(feature = "candle"))]
+    #[allow(clippy::unused_async)]
+    async fn create_candle_object_detection_task(
+        _config: &Config,
+        _task_name: String,
+    ) -> TaskResult<Box<dyn Task>> {
+        Err(TaskError::Config(
+            "Candle object detection backend requested but 'candle' feature is not enabled. \
+             Rebuild with: cargo build --features candle-metal  (macOS) \
+             or: cargo build --features candle-cuda  (Linux/NVIDIA)"
+                .into(),
+        ))
+    }
+
+    /// Create a Candle-based image-to-text task (BLIP image captioning).
+    #[cfg(feature = "candle")]
+    async fn create_candle_image_to_text_task(
+        config: &Config,
+        task_name: String,
+    ) -> TaskResult<Box<dyn Task>> {
+        info!(
+            task_type = %config.task_type,
+            "Creating CandleImageToTextTask"
+        );
+
+        let model_dir = Self::get_model_directory_for_candle(config).await?;
+        let task = CandleImageToTextTask::from_model_dir(&model_dir, task_name, config)?;
+
+        Ok(Box::new(task))
+    }
+
+    #[cfg(not(feature = "candle"))]
+    #[allow(clippy::unused_async)]
+    async fn create_candle_image_to_text_task(
+        _config: &Config,
+        _task_name: String,
+    ) -> TaskResult<Box<dyn Task>> {
+        Err(TaskError::Config(
+            "Candle image-to-text backend requested but 'candle' feature is not enabled. \
              Rebuild with: cargo build --features candle-metal  (macOS) \
              or: cargo build --features candle-cuda  (Linux/NVIDIA)"
                 .into(),

@@ -48,8 +48,11 @@ rand = "0.8"
 # Audio processing
 hound = "3.5"
 
-# Base64 for audio data
+# Base64 for audio/image data
 base64 = "0.22"
+
+# Image processing for object detection
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 # Async streams
 async-stream = "0.3"

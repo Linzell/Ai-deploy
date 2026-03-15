@@ -196,6 +196,22 @@ async fn run_with_model(model_id: &str, cli: &Cli) -> anyhow::Result<()> {
                         "No ONNX variant found — falling back to Candle encoder backend",
                     );
                     inferred_backend = "candle".to_string();
+                } else if task_obj.is_object_detection() {
+                    // Object detection (DETR) can fall back to Candle's DETR backend
+                    info!(
+                        model = %effective_model_id,
+                        task = task_type,
+                        "No ONNX variant found — falling back to Candle object detection backend",
+                    );
+                    inferred_backend = "candle".to_string();
+                } else if task_obj.is_image_to_text() {
+                    // Image-to-text (BLIP) can fall back to Candle's BLIP backend
+                    info!(
+                        model = %effective_model_id,
+                        task = task_type,
+                        "No ONNX variant found — falling back to Candle image-to-text backend",
+                    );
+                    inferred_backend = "candle".to_string();
                 } else {
                     anyhow::bail!(
                         "Model '{effective_model_id}' has safetensors but task '{task_type}' \

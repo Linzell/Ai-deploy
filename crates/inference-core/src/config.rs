@@ -149,6 +149,18 @@ impl TaskType {
         s == "audio_classification"
     }
 
+    /// Check if this is an object detection task.
+    pub fn is_object_detection(&self) -> bool {
+        let s = self.0.to_lowercase().replace('-', "_");
+        s == "object_detection"
+    }
+
+    /// Check if this is an image-to-text (image captioning) task.
+    pub fn is_image_to_text(&self) -> bool {
+        let s = self.0.to_lowercase().replace('-', "_");
+        s == "image_to_text"
+    }
+
     /// Get the raw string value.
     pub fn as_str(&self) -> &str {
         &self.0
