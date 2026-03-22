@@ -136,6 +136,29 @@ impl WorkerService for WorkerServiceImpl {
             );
         }
 
+        // --- Check if should unload due to idle timeout ---
+        if self.task.should_unload() {
+            info!(
+                "[{}] Unloading model due to idle timeout for task '{}'",
+                request_id,
+                self.task.name()
+            );
+            // Clone the Arc and try to get mutable reference
+            let mut task_clone = Arc::clone(&self.task);
+            if let Some(task) = Arc::get_mut(&mut task_clone) {
+                let unload_result = task.unload().await;
+                if !unload_result.success {
+                    warn!(
+                        "[{}] Failed to unload model: {}",
+                        request_id,
+                        unload_result.error.as_deref().unwrap_or("unknown")
+                    );
+                }
+            } else {
+                warn!("[{}] Cannot unload model - Arc is shared", request_id);
+            }
+        }
+
         // --- Execute task with optional timeout ---
         // Route through batcher if available, otherwise call task.execute() directly.
         let task_future = if let Some(ref batch_handle) = self.batch_handle {
@@ -245,14 +268,38 @@ impl WorkerService for WorkerServiceImpl {
             );
         }
 
+        // Check if should unload due to idle timeout
+        if self.task.should_unload() {
+            info!(
+                "[{}] Unloading model due to idle timeout for task '{}'",
+                request_id,
+                self.task.name()
+            );
+            // Clone the Arc and try to get mutable reference
+            let mut task_clone = Arc::clone(&self.task);
+            if let Some(task) = Arc::get_mut(&mut task_clone) {
+                let unload_result = task.unload().await;
+                if !unload_result.success {
+                    warn!(
+                        "[{}] Failed to unload model: {}",
+                        request_id,
+                        unload_result.error.as_deref().unwrap_or("unknown")
+                    );
+                }
+            } else {
+                warn!("[{}] Cannot unload model - Arc is shared", request_id);
+            }
+        }
+
         // Execute streaming task
         let task = Arc::clone(&self.task);
         let payload = req.payload.clone();
         let rid = request_id.clone();
+        let rid_for_log = request_id.clone();
         let stream_task_name = task_name.clone();
 
         let stream = async_stream::stream! {
-            let mut task_stream = task.execute_stream(&payload, &rid).await;
+             let mut task_stream = task.execute_stream(payload, rid).await;
 
             while let Some(chunk) = task_stream.next().await {
                 yield Ok(ProtoTaskChunk {
@@ -263,7 +310,7 @@ impl WorkerService for WorkerServiceImpl {
             }
 
             let duration_ms = start.elapsed().as_millis();
-            info!("[{}] StreamTask completed in {}ms", rid, duration_ms);
+             info!("[{}] StreamTask completed in {}ms", rid_for_log, duration_ms);
 
             // OTel metrics (no-op when OTEL_ENDPOINT is not set)
             let m = metrics::metrics();

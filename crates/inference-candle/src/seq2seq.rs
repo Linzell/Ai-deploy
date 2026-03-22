@@ -1255,9 +1255,9 @@ impl Task for CandleSeq2SeqTask {
         }
     }
 
-    async fn execute_stream(&self, payload: &str, request_id: &str) -> TaskStream {
+    async fn execute_stream(&self, payload: String, request_id: String) -> TaskStream {
         // Seq2seq models don't support true streaming, return complete result
-        let result = self.execute(payload, request_id).await;
+        let result = self.execute(&payload, &request_id).await;
         let chunk = if result.success {
             TaskChunk::final_data(result.result.unwrap_or_default())
         } else {

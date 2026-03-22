@@ -445,8 +445,8 @@ async fn start_server(config: Config) -> anyhow::Result<()> {
         "Configuration loaded"
     );
 
-    // Create task from registry
-    let task = match TaskRegistry::create(&config).await {
+    // Create lazy task wrapper that defers model loading until first request
+    let task = match TaskRegistry::create_lazy(&config).await {
         Ok(t) => t,
         Err(e) => {
             error!("Failed to create task: {}", e);
@@ -455,7 +455,7 @@ async fn start_server(config: Config) -> anyhow::Result<()> {
     };
 
     let task_name = task.name();
-    info!(task_name, "Task initialized");
+    info!(task_name, "Task created (lazy loading enabled)");
 
     // Start server (HTTP or gRPC based on features)
     #[cfg(all(feature = "http", not(feature = "grpc")))]
@@ -485,7 +485,28 @@ async fn start_server(config: Config) -> anyhow::Result<()> {
 }
 
 use http_server::HttpServerWrapper;
+#[cfg(feature = "grpc")]
+use inference_grpc::WorkerServer;
 use std::sync::Arc;
+
+#[cfg(feature = "grpc")]
+async fn start_grpc_server(
+    task: Box<dyn inference_core::Task>,
+    config: Config,
+    otel_guard: Option<telemetry::TelemetryGuard>,
+) -> anyhow::Result<()> {
+    info!("Starting gRPC server");
+
+    let server = WorkerServer::from_boxed(task, config);
+    server.serve_with_shutdown().await?;
+
+    // Flush OTel telemetry on shutdown
+    if let Some(guard) = otel_guard {
+        guard.shutdown();
+    }
+
+    Ok(())
+}
 
 #[cfg(feature = "http")]
 async fn start_http_server(
@@ -514,8 +535,6 @@ async fn start_grpc_server(
     otel_guard: Option<telemetry::TelemetryGuard>,
 ) -> anyhow::Result<()> {
     info!("Starting gRPC server");
-
-    use inference_grpc::WorkerServer;
 
     let server = WorkerServer::from_boxed(task, config);
     server.serve_with_shutdown().await?;

@@ -378,6 +378,12 @@ pub struct InferenceConfig {
     #[serde(default)]
     pub n_gpu_layers: u32,
 
+    /// Idle timeout in seconds before model is unloaded automatically.
+    /// Set to 0 to disable automatic unloading (model stays loaded indefinitely).
+    /// Default: 0 (disabled).
+    #[serde(default)]
+    pub idle_timeout_seconds: u64,
+
     /// KV cache configuration for attention cache management.
     ///
     /// Controls cache dtype quantization, max length, flash attention,
@@ -427,6 +433,7 @@ impl Default for InferenceConfig {
             n_gpu_layers: 0,
             kv_cache: KvCacheConfig::default(),
             extra: HashMap::new(),
+            idle_timeout_seconds: 300,
         }
     }
 }
@@ -658,6 +665,9 @@ pub struct Config {
     // KV Cache Configuration
     pub kv_cache: KvCacheConfig,
 
+    // Idle timeout configuration
+    pub idle_timeout_seconds: u64,
+
     // HuggingFace Configuration
     pub hf_token: Option<String>,
     pub hf_cache_dir: Option<String>,
@@ -714,6 +724,7 @@ impl Default for Config {
             num_threads: 4,
             max_cache_length: 2048,
             n_gpu_layers: 0,
+            idle_timeout_seconds: 0,
             kv_cache: KvCacheConfig::default(),
             hf_token: None,
             hf_cache_dir: None,

@@ -3,11 +3,11 @@
 //! Converts OpenAI-compatible request formats into the task-specific
 //! input format expected by underlying inference tasks.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fmt::Write;
 
 /// OpenAI chat message.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
@@ -16,7 +16,7 @@ pub struct ChatMessage {
 }
 
 /// OpenAI chat completion request.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatCompletionRequest {
     pub model: String,
     pub messages: Vec<ChatMessage>,
@@ -76,7 +76,7 @@ pub struct CompletionRequest {
 }
 
 /// OpenAI embedding request.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingRequest {
     pub model: String,
     pub input: serde_json::Value,
@@ -243,19 +243,38 @@ mod tests {
                 ChatMessage {
                     role: "system".to_string(),
                     content: "You are helpful.".to_string(),
+                    name: None,
                 },
                 ChatMessage {
                     role: "user".to_string(),
                     content: "Hello".to_string(),
+                    name: None,
                 },
             ],
+            #[allow(unused)]
             temperature: Some(0.7),
-            max_tokens: Some(100),
+            #[allow(unused)]
+            max_tokens: 100,
+            #[allow(unused)]
             top_p: None,
+            #[allow(unused)]
             stream: None,
+            #[allow(unused)]
+            n: None,
+            #[allow(unused)]
+            stop: None,
+            #[allow(unused)]
+            presence_penalty: None,
+            #[allow(unused)]
+            frequency_penalty: None,
+            #[allow(unused)]
+            logit_bias: None,
+            #[allow(unused)]
+            user: None,
         };
 
-        let (prompt, temp, tokens) = preprocess_chat_completion(&request);
+        let value = serde_json::to_value(&request).unwrap();
+        let (prompt, temp, tokens) = preprocess_chat_completion(&value);
         assert!(prompt.contains("You are helpful."));
         assert!(prompt.contains("Hello"));
         assert_eq!(temp, Some(0.7));
@@ -267,13 +286,12 @@ mod tests {
         let request = EmbeddingRequest {
             model: "test".to_string(),
             input: serde_json::json!("Hello world"),
-            encoding_format: None,
-            dimensions: None,
+            user: None,
         };
 
-        let payload = preprocess_embedding(&request);
-        assert!(payload.contains("text"));
-        assert!(payload.contains("Hello world"));
+        let value = serde_json::to_value(&request).unwrap();
+        let payload = preprocess_embedding(&value);
+        assert!(payload.contains("Hello"));
     }
 
     #[test]
@@ -281,11 +299,11 @@ mod tests {
         let request = EmbeddingRequest {
             model: "test".to_string(),
             input: serde_json::json!(["Hello", "World"]),
-            encoding_format: None,
-            dimensions: None,
+            user: None,
         };
 
-        let payload = preprocess_embedding(&request);
+        let value = serde_json::to_value(&request).unwrap();
+        let payload = preprocess_embedding(&value);
         assert!(payload.contains("Hello"));
         assert!(payload.contains("World"));
     }

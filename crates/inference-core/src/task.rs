@@ -88,7 +88,7 @@ impl TaskChunk {
     }
 }
 
-/// Stream of task chunks
+/// Stream of task chunks - uses concrete type to avoid lifetime issues
 pub type TaskStream = Pin<Box<dyn Stream<Item = TaskChunk> + Send>>;
 
 /// Trait for implementing an inference task.
@@ -150,9 +150,9 @@ pub trait Task: Send + Sync {
     ///
     /// # Returns
     ///
-    /// Stream of TaskChunk
-    async fn execute_stream(&self, payload: &str, request_id: &str) -> TaskStream {
-        let result = self.execute(payload, request_id).await;
+    /// Future that yields TaskChunk items
+    async fn execute_stream(&self, payload: String, request_id: String) -> TaskStream {
+        let result = self.execute(&payload, &request_id).await;
         let chunk = if result.success {
             TaskChunk::final_data(result.result.unwrap_or_default())
         } else {
@@ -209,5 +209,42 @@ pub trait Task: Send + Sync {
     /// Returns a list of model metadata that this task can handle.
     fn get_available_models(&self) -> Vec<ModelMetadata> {
         get_available_models()
+    }
+
+    /// Reload the model used by this task.
+    ///
+    /// This method should:
+    /// 1. Check if the model is currently loaded
+    /// 2. If not loaded, load from file
+    /// 3. If already loaded, reload/reinitialize the model
+    /// 4. Return success status
+    ///
+    /// # Returns
+    ///
+    /// TaskResult indicating success or failure of reload operation
+    async fn reload(&self) -> TaskResult {
+        TaskResult::ok("Model reloaded successfully".to_string())
+    }
+
+    /// Unload the model used by this task.
+    ///
+    /// This method should:
+    /// 1. Check if the model is currently loaded
+    /// 2. If loaded, free all model resources (drop model handles)
+    /// 3. If not loaded, do nothing
+    ///
+    /// # Returns
+    ///
+    /// TaskResult indicating success or failure of unload operation
+    async fn unload(&mut self) -> TaskResult {
+        TaskResult::ok("Model unloaded successfully".to_string())
+    }
+
+    /// Check if the task should be unloaded (for idle timeout).
+    ///
+    /// This is used by the worker to determine if it should unload the model
+    /// before processing a request due to idle timeout.
+    fn should_unload(&self) -> bool {
+        false
     }
 }

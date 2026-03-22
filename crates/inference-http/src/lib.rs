@@ -9,7 +9,9 @@
 
 #![allow(dead_code)]
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+use tokio::net::TcpListener;
 
 mod handlers;
 mod models;
@@ -29,7 +31,10 @@ use tracing::info;
 
 use inference_core::{Config, Result, Task};
 
-use handlers::{chat_completions, completions, embeddings, get_model, list_models, AppState};
+use handlers::{
+    chat_completions, completions, embeddings, get_model, list_models, model_status, reload_model,
+    shutdown, unload_model, AppState,
+};
 
 /// HTTP server wrapper around Task.
 #[derive(Clone)]
@@ -46,10 +51,13 @@ impl HttpServer {
 
     /// Build the router with all endpoints and state.
     pub fn build_router(&self) -> Router {
-        let state = AppState {
-            task: Arc::clone(&self.task),
-        };
-        self.build_router_with_state(state)
+        self.build_router_with_state(AppState {
+            task: self.task.clone(),
+            idle_timeout_seconds: Arc::new(Mutex::new(self.config.idle_timeout_seconds)),
+            last_access_time: Arc::new(Mutex::new(Some(Instant::now()))),
+            should_unload: Arc::new(Mutex::new(false)),
+            shutdown_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        })
     }
 
     /// Build the router with state.
@@ -89,6 +97,10 @@ impl HttpServer {
             .route("/v1/chat/completions", post(chat_completions))
             .route("/v1/completions", post(completions))
             .route("/v1/embeddings", post(embeddings))
+            .route("/reload/{model}", post(reload_model))
+            .route("/unload/{model}", post(unload_model))
+            .route("/status", get(model_status))
+            .route("/shutdown", post(shutdown))
             .with_state(state)
             .layer(cors)
             .layer(trace)
@@ -105,15 +117,32 @@ impl HttpServer {
             self.task.name()
         );
 
-        let listener = tokio::net::TcpListener::bind(&addr).await?;
-
-        let state = AppState {
-            task: Arc::clone(&self.task),
+        let mut state = AppState {
+            task: self.task.clone(),
+            idle_timeout_seconds: Arc::new(Mutex::new(self.config.idle_timeout_seconds)),
+            last_access_time: Arc::new(Mutex::new(Some(Instant::now()))),
+            should_unload: Arc::new(Mutex::new(false)),
+            shutdown_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
+        state.start_idle_timeout_loop();
 
-        let router = self.build_router_with_state(state);
+        let listener = TcpListener::bind(addr.clone()).await?;
+        info!("HTTP server listening on {}", addr);
 
-        axum::serve(listener, router).await?;
+        let app = self.build_router_with_state(state.clone());
+        let shutdown_flag = state.shutdown_requested.clone();
+
+        tokio::select! {
+            result = axum::serve(listener, app) => {
+                result?;
+            }
+            () = async {
+                while !shutdown_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                info!("Shutdown signal received");
+            } => {}
+        };
 
         Ok(())
     }

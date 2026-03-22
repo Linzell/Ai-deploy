@@ -16,6 +16,7 @@ default = []
 inference-core = { path = "../inference-core" }
 inference-grpc = { path = "../inference-grpc" }
 tokio.workspace = true
+tokio-util.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
 serde.workspace = true

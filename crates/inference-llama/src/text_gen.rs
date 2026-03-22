@@ -553,6 +553,7 @@ pub struct LlamaTextGenTask {
     name: String,
     request_tx: std::sync::mpsc::Sender<LlamaRequest>,
     gen_config: LlamaGenConfig,
+    should_unload: std::sync::Arc<std::sync::Mutex<bool>>,
 }
 
 impl LlamaTextGenTask {
@@ -613,6 +614,7 @@ impl LlamaTextGenTask {
             name,
             request_tx,
             gen_config,
+            should_unload: std::sync::Arc::new(std::sync::Mutex::new(false)),
         })
     }
 
@@ -714,11 +716,11 @@ impl Task for LlamaTextGenTask {
         }
     }
 
-    async fn execute_stream(&self, payload: &str, request_id: &str) -> TaskStream {
+    async fn execute_stream(&self, payload: String, request_id: String) -> TaskStream {
         debug!(request_id = request_id, "Llama text-gen streaming");
 
         // Parse input
-        let input: LlamaTextGenInput = match serde_json::from_str(payload) {
+        let input: LlamaTextGenInput = match serde_json::from_str(&payload) {
             Ok(i) => i,
             Err(e) => {
                 return Box::pin(tokio_stream::once(TaskChunk::error(format!(
@@ -744,6 +746,10 @@ impl Task for LlamaTextGenTask {
     fn is_ready(&self) -> bool {
         // Optimistically return true - the worker will report errors
         true
+    }
+
+    fn should_unload(&self) -> bool {
+        *self.should_unload.lock().unwrap()
     }
 }
 

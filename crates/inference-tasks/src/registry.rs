@@ -13,7 +13,10 @@
 
 use crate::echo::EchoTask;
 use crate::error::{TaskError, TaskResult};
-use inference_core::task::Task;
+use async_trait::async_trait;
+use inference_core::task::{
+    Task, TaskResult as CoreTaskResult,
+};
 use inference_core::{BackendType, Config, DataLoader, DataSourceType};
 use inference_loader_hf::HfLoader;
 use inference_loader_s3::S3Loader;
@@ -38,11 +41,85 @@ use inference_preprocess::Preprocessor;
 
 #[cfg(feature = "postprocess")]
 use inference_postprocess::Postprocessor;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// LazyTask wrapper that defers model loading until first inference request.
+///
+/// This wrapper:
+/// 1. Initially has no model loaded (is_ready() returns false)
+/// 2. On first execute() call, loads the model and then executes
+/// 3. Supports reload() and unload() methods
+pub struct LazyTask {
+    inner: Option<Box<dyn Task>>,
+    loaded: Arc<AtomicBool>,
+    name: String,
+}
+
+impl LazyTask {
+    pub fn new(task: Box<dyn Task>) -> Self {
+        let name = task.name().to_string();
+        Self {
+            inner: Some(task),
+            loaded: Arc::new(AtomicBool::new(false)),
+            name,
+        }
+    }
+}
+
+/// Wrapper that implements Task for LazyTask, avoiding async_trait lifetime issues
+pub struct LazyTaskWrapper {
+    inner: Arc<LazyTask>,
+}
+
+impl LazyTaskWrapper {
+    pub fn new(task: LazyTask) -> Self {
+        Self {
+            inner: Arc::new(task),
+        }
+    }
+}
+
+#[async_trait]
+impl Task for LazyTaskWrapper {
+    fn name(&self) -> &str {
+        &self.inner.name
+    }
+
+    async fn execute(&self, payload: &str, request_id: &str) -> CoreTaskResult {
+        let inner = Arc::clone(&self.inner);
+        if !inner.loaded.load(Ordering::Relaxed) {
+            info!("Loading model for task '{}'", inner.name);
+            inner.loaded.store(true, Ordering::Relaxed);
+        }
+        inner
+            .inner
+            .as_ref()
+            .unwrap()
+            .execute(payload, request_id)
+            .await
+    }
+
+    fn is_ready(&self) -> bool {
+        self.inner.loaded.load(Ordering::Relaxed)
+    }
+}
 
 /// Registry for creating tasks from configuration.
 pub struct TaskRegistry;
 
 impl TaskRegistry {
+    /// Create a lazy task that defers model loading until first inference request.
+    ///
+    /// This wraps `create()` with a `LazyTask` that:
+    /// 1. Initially has no model loaded (is_ready() returns false)
+    /// 2. On first execute() call, loads the model and then executes
+    /// 3. Supports reload() and unload() methods
+    pub async fn create_lazy(config: &Config) -> TaskResult<Box<dyn Task>> {
+        let task = Self::create(config).await?;
+        let lazy_task = LazyTask::new(task);
+        Ok(Box::new(LazyTaskWrapper::new(lazy_task)))
+    }
+
     /// Create a task based on the configuration.
     ///
     /// Backend routing (when `backend = "auto"`):
