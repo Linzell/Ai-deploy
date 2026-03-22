@@ -4,6 +4,7 @@
 //! input format expected by underlying inference tasks.
 
 use serde::Deserialize;
+use std::fmt::Write;
 
 /// OpenAI chat message.
 #[derive(Debug, Clone, Deserialize)]
@@ -89,9 +90,8 @@ pub struct EmbeddingRequest {
 /// For text generation tasks, it expects: `{"text": "..."}`
 pub fn preprocess_chat_completion(body: &serde_json::Value) -> (String, Option<f32>, Option<u32>) {
     // Extract messages array
-    let messages = match body.get("messages").and_then(|v| v.as_array()) {
-        Some(msgs) => msgs,
-        None => return (String::new(), None, None),
+    let Some(messages) = body.get("messages").and_then(|v| v.as_array()) else {
+        return (String::new(), None, None);
     };
 
     // Extract the full conversation context as a single prompt
@@ -105,7 +105,7 @@ pub fn preprocess_chat_completion(body: &serde_json::Value) -> (String, Option<f
                 _ => "",
             };
             if let Some(content) = msg.get("content").and_then(|v| v.as_str()) {
-                prompt.push_str(&format!("{}{}", role_marker, content));
+                let _ = write!(prompt, "{role_marker}{content}");
                 prompt.push('\n');
             }
         }
@@ -114,11 +114,11 @@ pub fn preprocess_chat_completion(body: &serde_json::Value) -> (String, Option<f
     // Extract temperature and max_tokens
     let temperature = body
         .get("temperature")
-        .and_then(|v| v.as_f64())
+        .and_then(serde_json::Value::as_f64)
         .and_then(|f| (f as f32).into());
     let max_tokens = body
         .get("max_tokens")
-        .and_then(|v| v.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .map(|n| n as u32);
 
     (prompt, temperature, max_tokens)
@@ -133,11 +133,11 @@ pub fn preprocess_completion(body: &serde_json::Value) -> (String, Option<f32>, 
         .to_string();
     let temperature = body
         .get("temperature")
-        .and_then(|v| v.as_f64())
+        .and_then(serde_json::Value::as_f64)
         .and_then(|f| (f as f32).into());
     let max_tokens = body
         .get("max_tokens")
-        .and_then(|v| v.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .map(|n| n as u32);
 
     (prompt, temperature, max_tokens)
@@ -159,7 +159,7 @@ pub fn preprocess_embedding(body: &serde_json::Value) -> String {
         serde_json::Value::Array(arr) => {
             let texts: Vec<String> = arr
                 .iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
                 .collect();
             if texts.is_empty() {
                 serde_json::json!({ "text": "", "truncate": true }).to_string()

@@ -484,6 +484,9 @@ async fn start_server(config: Config) -> anyhow::Result<()> {
     Ok(())
 }
 
+use http_server::HttpServerWrapper;
+use std::sync::Arc;
+
 #[cfg(feature = "http")]
 async fn start_http_server(
     task: Box<dyn inference_core::Task>,
@@ -491,9 +494,6 @@ async fn start_http_server(
     otel_guard: Option<telemetry::TelemetryGuard>,
 ) -> anyhow::Result<()> {
     info!("Starting HTTP server (OpenAI-compatible endpoints)");
-
-    use http_server::HttpServerWrapper;
-    use std::sync::Arc;
 
     let task_arc: Arc<dyn inference_core::Task> = task.into();
     let wrapper = HttpServerWrapper::new(task_arc, config);

@@ -60,9 +60,9 @@ pub struct ChatCompletionResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatCompletionUsage {
-    pub prompt_tokens: u32,
-    pub completion_tokens: u32,
-    pub total_tokens: u32,
+    pub prompt: u32,
+    pub completion: u32,
+    pub total: u32,
 }
 
 // Alias for backward compatibility
@@ -118,9 +118,9 @@ pub struct CompletionResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletionUsage {
-    pub prompt_tokens: u32,
-    pub completion_tokens: u32,
-    pub total_tokens: u32,
+    pub prompt: u32,
+    pub completion: u32,
+    pub total: u32,
 }
 
 // ==================== EMBEDDINGS ====================
@@ -181,9 +181,7 @@ pub struct ModelResponse {
     pub data: Vec<Model>,
 }
 
-#[allow(dead_code)]
 // ==================== LIST MODELS ====================
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListModelsResponse {
     pub object: String,

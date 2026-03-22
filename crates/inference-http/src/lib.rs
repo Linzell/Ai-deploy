@@ -29,7 +29,7 @@ use tracing::info;
 
 use inference_core::{Config, Result, Task};
 
-use handlers::*;
+use handlers::{chat_completions, completions, embeddings, get_model, list_models, AppState};
 
 /// HTTP server wrapper around Task.
 #[derive(Clone)]
@@ -78,7 +78,7 @@ impl HttpServer {
                 "HTTP concurrency limit: {} max in-flight requests",
                 self.config.max_concurrent_requests
             );
-            ConcurrencyLimitLayer::new(self.config.max_concurrent_requests as usize)
+            ConcurrencyLimitLayer::new(self.config.max_concurrent_requests)
         } else {
             ConcurrencyLimitLayer::new(usize::MAX)
         };

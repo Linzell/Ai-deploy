@@ -80,8 +80,8 @@ pub async fn chat_completions(
         } => {
             let created = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|e| e.as_secs() * 1000 + e.subsec_millis() as u64)
-                .unwrap_or(0) as u64;
+                .map(|e| e.as_secs() * 1000 + u64::from(e.subsec_millis()))
+                .unwrap_or(0);
 
             let usage = serde_json::json!({
                 "prompt_tokens": 0,
@@ -156,8 +156,8 @@ pub async fn completions(
         } => {
             let created = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|e| e.as_secs() * 1000 + e.subsec_millis() as u64)
-                .unwrap_or(0) as u64;
+                .map(|e| e.as_secs() * 1000 + u64::from(e.subsec_millis()))
+                .unwrap_or(0);
 
             let usage = serde_json::json!({
                 "prompt_tokens": 0,
