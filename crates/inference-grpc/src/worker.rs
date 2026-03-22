@@ -130,7 +130,9 @@ impl WorkerService for WorkerServiceImpl {
         if task_name != self.task.name() {
             warn!(
                 "[{}] Task name mismatch: got '{}', this worker handles '{}'. Processing anyway.",
-                request_id, task_name, self.task.name()
+                request_id,
+                task_name,
+                self.task.name()
             );
         }
 
@@ -237,7 +239,9 @@ impl WorkerService for WorkerServiceImpl {
         if task_name != self.task.name() {
             warn!(
                 "[{}] Task name mismatch: got '{}', this worker handles '{}'. Processing anyway.",
-                request_id, task_name, self.task.name()
+                request_id,
+                task_name,
+                self.task.name()
             );
         }
 

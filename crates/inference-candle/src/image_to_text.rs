@@ -393,11 +393,9 @@ impl CandleImageToTextTask {
             }
         };
 
-        let image_bytes = base64::Engine::decode(
-            &base64::engine::general_purpose::STANDARD,
-            &b64_str,
-        )
-        .map_err(|e| TaskError::InvalidInput(format!("Invalid base64: {e}")))?;
+        let image_bytes =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &b64_str)
+                .map_err(|e| TaskError::InvalidInput(format!("Invalid base64: {e}")))?;
 
         let img = image::load_from_memory(&image_bytes)
             .map_err(|e| TaskError::InvalidInput(format!("Invalid image: {e}")))?;
@@ -437,17 +435,18 @@ impl CandleImageToTextTask {
         _prompt: Option<&str>,
         max_tokens: usize,
     ) -> TaskResult<String> {
-        let mut model = self.model.lock().map_err(|e| {
-            TaskError::Inference(format!("Model lock poisoned: {e}"))
-        })?;
+        let mut model = self
+            .model
+            .lock()
+            .map_err(|e| TaskError::Inference(format!("Model lock poisoned: {e}")))?;
 
         // Reset KV cache from any prior run
         model.reset_kv_cache();
 
         // 1. Encode image through ViT
-        let image_embeds = image.apply(model.vision_model()).map_err(|e| {
-            TaskError::Inference(format!("Vision encoding failed: {e}"))
-        })?;
+        let image_embeds = image
+            .apply(model.vision_model())
+            .map_err(|e| TaskError::Inference(format!("Vision encoding failed: {e}")))?;
 
         debug!(shape = ?image_embeds.shape(), "Image embeddings computed");
 
@@ -460,9 +459,8 @@ impl CandleImageToTextTask {
             let input_ids =
                 Tensor::new(&token_ids[start_pos..], &self.device).and_then(|t| t.unsqueeze(0));
 
-            let input_ids = input_ids.map_err(|e| {
-                TaskError::Inference(format!("Failed to create input_ids: {e}"))
-            })?;
+            let input_ids = input_ids
+                .map_err(|e| TaskError::Inference(format!("Failed to create input_ids: {e}")))?;
 
             let logits = model
                 .text_decoder()

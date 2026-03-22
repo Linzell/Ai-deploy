@@ -3,6 +3,7 @@
 //! This module defines the core abstraction for all inference tasks,
 //! regardless of backend (ONNX, Candle, llama.cpp).
 
+use crate::model::{get_available_models, ModelMetadata};
 use async_trait::async_trait;
 use std::pin::Pin;
 use tokio_stream::Stream;
@@ -201,5 +202,12 @@ pub trait Task: Send + Sync {
     /// work but will just call `execute` sequentially (no benefit).
     fn supports_batching(&self) -> bool {
         false
+    }
+
+    /// Get available model names for this task.
+    ///
+    /// Returns a list of model metadata that this task can handle.
+    fn get_available_models(&self) -> Vec<ModelMetadata> {
+        get_available_models()
     }
 }

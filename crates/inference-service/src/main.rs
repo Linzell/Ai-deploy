@@ -37,10 +37,12 @@ mod interactive;
 mod system_metrics;
 mod telemetry;
 
+#[cfg(feature = "http")]
+mod http_server;
+
 use clap::Parser;
 use cli::{Cli, CliMode};
 use inference_core::Config;
-use inference_grpc::WorkerServer;
 use inference_tasks::TaskRegistry;
 use std::env;
 use tracing::{error, info, warn, Level};
@@ -348,6 +350,7 @@ async fn run_with_model(model_id: &str, cli: &Cli) -> anyhow::Result<()> {
         cli.top_p,
         cli.num_threads,
         cli.port,
+        cli.http_port,
         cli.n_gpu_layers,
     );
 
@@ -387,6 +390,9 @@ async fn run_with_config(config_path: &str, cli: &Cli) -> anyhow::Result<()> {
     }
     if let Some(v) = cli.port {
         config.grpc_port = v;
+    }
+    if let Some(v) = cli.http_port {
+        config.http_port = v;
     }
     if let Some(v) = cli.n_gpu_layers {
         config.n_gpu_layers = v;
@@ -448,9 +454,69 @@ async fn start_server(config: Config) -> anyhow::Result<()> {
         }
     };
 
-    info!(task_name = task.name(), "Task initialized");
+    let task_name = task.name();
+    info!(task_name, "Task initialized");
 
-    // Start gRPC server
+    // Start server (HTTP or gRPC based on features)
+    #[cfg(all(feature = "http", not(feature = "grpc")))]
+    {
+        #[cfg(feature = "http")]
+        start_http_server(task, config, otel_guard).await?;
+    }
+
+    #[cfg(all(not(feature = "http"), feature = "grpc"))]
+    {
+        start_grpc_server(task, config, otel_guard).await?;
+    }
+
+    #[cfg(all(feature = "http", feature = "grpc"))]
+    {
+        // Both enabled - prefer gRPC for backward compatibility
+        start_grpc_server(task, config, otel_guard).await?;
+    }
+
+    #[cfg(not(any(feature = "http", feature = "grpc")))]
+    {
+        error!("No server protocol enabled. Enable 'http' or 'grpc' feature.");
+        return Err(anyhow::anyhow!("No server protocol enabled"));
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "http")]
+async fn start_http_server(
+    task: Box<dyn inference_core::Task>,
+    config: Config,
+    otel_guard: Option<telemetry::TelemetryGuard>,
+) -> anyhow::Result<()> {
+    info!("Starting HTTP server (OpenAI-compatible endpoints)");
+
+    use http_server::HttpServerWrapper;
+    use std::sync::Arc;
+
+    let task_arc: Arc<dyn inference_core::Task> = task.into();
+    let wrapper = HttpServerWrapper::new(task_arc, config);
+    wrapper.serve().await?;
+
+    // Flush OTel telemetry on shutdown
+    if let Some(guard) = otel_guard {
+        guard.shutdown();
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "grpc")]
+async fn start_grpc_server(
+    task: Box<dyn inference_core::Task>,
+    config: Config,
+    otel_guard: Option<telemetry::TelemetryGuard>,
+) -> anyhow::Result<()> {
+    info!("Starting gRPC server");
+
+    use inference_grpc::WorkerServer;
+
     let server = WorkerServer::from_boxed(task, config);
     server.serve_with_shutdown().await?;
 

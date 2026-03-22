@@ -462,6 +462,10 @@ pub struct ServiceConfig {
     #[serde(default = "default_grpc_port")]
     pub grpc_port: u16,
 
+    /// HTTP server port
+    #[serde(default = "default_http_port")]
+    pub http_port: u16,
+
     /// Health check port
     #[serde(default = "default_health_port")]
     pub health_port: u16,
@@ -516,6 +520,9 @@ pub struct ServiceConfig {
 fn default_grpc_port() -> u16 {
     50051
 }
+fn default_http_port() -> u16 {
+    8000
+}
 fn default_health_port() -> u16 {
     8080
 }
@@ -548,6 +555,7 @@ impl Default for ServiceConfig {
     fn default() -> Self {
         Self {
             grpc_port: default_grpc_port(),
+            http_port: default_http_port(),
             health_port: default_health_port(),
             name: default_service_name(),
             enable_batching: default_true(),
@@ -663,6 +671,8 @@ pub struct Config {
 
     // Service Configuration
     pub grpc_port: u16,
+    #[serde(default = "default_http_port")]
+    pub http_port: u16,
     pub health_port: u16,
     pub service_name: String,
     pub enable_batching: bool,
@@ -713,6 +723,7 @@ impl Default for Config {
             s3_region: None,
             s3_endpoint: None,
             grpc_port: 50051,
+            http_port: 8000,
             health_port: 8080,
             service_name: "maiia-ai-worker".to_string(),
             enable_batching: true,
@@ -873,6 +884,7 @@ impl Config {
 
         // Service
         self.grpc_port = toml.service.grpc_port;
+        self.http_port = toml.service.http_port;
         self.health_port = toml.service.health_port;
         self.service_name.clone_from(&toml.service.name);
         self.enable_batching = toml.service.enable_batching;
@@ -990,6 +1002,9 @@ impl Config {
         // Service
         if let Some(v) = get_env("GRPC_PORT").and_then(|s| s.parse().ok()) {
             self.grpc_port = v;
+        }
+        if let Some(v) = get_env("HTTP_PORT").and_then(|s| s.parse().ok()) {
+            self.http_port = v;
         }
         if let Some(v) = get_env("HEALTH_PORT").and_then(|s| s.parse().ok()) {
             self.health_port = v;
@@ -1228,6 +1243,7 @@ impl Config {
         top_p: Option<f32>,
         num_threads: Option<usize>,
         port: Option<u16>,
+        http_port: Option<u16>,
         n_gpu_layers: Option<u32>,
     ) -> Self {
         let mut config = Self::default();
@@ -1284,6 +1300,9 @@ impl Config {
         }
         if let Some(v) = port {
             config.grpc_port = v;
+        }
+        if let Some(v) = http_port {
+            config.http_port = v;
         }
         if let Some(v) = n_gpu_layers {
             config.n_gpu_layers = v;

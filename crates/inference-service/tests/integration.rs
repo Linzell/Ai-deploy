@@ -1341,7 +1341,10 @@ async fn test_unknown_task_error() {
     // Task name mismatch is now lenient — the worker warns but still processes.
     // An unknown task_name with a valid payload should succeed, not error.
     let result = helpers::execute_task(SERVER_ADDR, "nonexistent.task.v1", "{}").await;
-    assert!(result.is_ok(), "Mismatched task name should still be processed");
+    assert!(
+        result.is_ok(),
+        "Mismatched task name should still be processed"
+    );
     println!("Unknown task lenient handling: PASSED");
 }
 

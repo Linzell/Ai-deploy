@@ -215,18 +215,21 @@ impl CandleObjectDetectionTask {
             }
         };
 
-        let image_bytes = base64::Engine::decode(
-            &base64::engine::general_purpose::STANDARD,
-            &b64_str,
-        )
-        .map_err(|e| TaskError::InvalidInput(format!("Invalid base64: {e}")))?;
+        let image_bytes =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &b64_str)
+                .map_err(|e| TaskError::InvalidInput(format!("Invalid base64: {e}")))?;
 
         // Decode image and resize
         let img = image::load_from_memory(&image_bytes)
             .map_err(|e| TaskError::InvalidInput(format!("Invalid image: {e}")))?;
 
         let (orig_w, orig_h) = (img.width(), img.height());
-        debug!(orig_w, orig_h, target_size = self.image_size, "Image loaded");
+        debug!(
+            orig_w,
+            orig_h,
+            target_size = self.image_size,
+            "Image loaded"
+        );
 
         // Resize to target size (maintaining aspect ratio with padding would be better,
         // but DETR in HF typically just resizes to a square)
@@ -274,24 +277,23 @@ impl CandleObjectDetectionTask {
         img_height: u32,
     ) -> TaskResult<Vec<DetectedObjectOutput>> {
         // Squeeze batch dim: [num_queries, num_classes+1]
-        let logits = logits.squeeze(0).map_err(|e| {
-            TaskError::Inference(format!("logits squeeze: {e}"))
-        })?;
-        let boxes = pred_boxes.squeeze(0).map_err(|e| {
-            TaskError::Inference(format!("boxes squeeze: {e}"))
-        })?;
+        let logits = logits
+            .squeeze(0)
+            .map_err(|e| TaskError::Inference(format!("logits squeeze: {e}")))?;
+        let boxes = pred_boxes
+            .squeeze(0)
+            .map_err(|e| TaskError::Inference(format!("boxes squeeze: {e}")))?;
 
         // Softmax over classes
-        let probs = candle_nn::ops::softmax(&logits, 1).map_err(|e| {
-            TaskError::Inference(format!("softmax: {e}"))
-        })?;
+        let probs = candle_nn::ops::softmax(&logits, 1)
+            .map_err(|e| TaskError::Inference(format!("softmax: {e}")))?;
 
-        let num_queries = probs.dim(0).map_err(|e| {
-            TaskError::Inference(format!("dim: {e}"))
-        })?;
-        let num_classes_plus_one = probs.dim(1).map_err(|e| {
-            TaskError::Inference(format!("dim: {e}"))
-        })?;
+        let num_queries = probs
+            .dim(0)
+            .map_err(|e| TaskError::Inference(format!("dim: {e}")))?;
+        let num_classes_plus_one = probs
+            .dim(1)
+            .map_err(|e| TaskError::Inference(format!("dim: {e}")))?;
         let num_classes = num_classes_plus_one - 1; // last class = "no object"
 
         let probs_vec: Vec<f32> = probs
@@ -354,7 +356,11 @@ impl CandleObjectDetectionTask {
         }
 
         // Sort by score descending
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         Ok(results)
     }
@@ -400,7 +406,10 @@ impl Task for CandleObjectDetectionTask {
             Err(e) => return GrpcTaskResult::err(e.to_string()),
         };
 
-        debug!(num_detections = detections.len(), "Object detection complete");
+        debug!(
+            num_detections = detections.len(),
+            "Object detection complete"
+        );
 
         match serde_json::to_string(&detections) {
             Ok(json) => GrpcTaskResult::ok(json),
@@ -420,9 +429,7 @@ impl CandleObjectDetectionTask {
             .inputs
             .as_ref()
             .or(input.image.as_ref())
-            .ok_or_else(|| {
-                TaskError::InvalidInput("Missing 'inputs' or 'image' field".into())
-            })?;
+            .ok_or_else(|| TaskError::InvalidInput("Missing 'inputs' or 'image' field".into()))?;
 
         let b64_str = match value {
             serde_json::Value::String(s) => {
@@ -439,11 +446,9 @@ impl CandleObjectDetectionTask {
             }
         };
 
-        let image_bytes = base64::Engine::decode(
-            &base64::engine::general_purpose::STANDARD,
-            &b64_str,
-        )
-        .map_err(|e| TaskError::InvalidInput(format!("Invalid base64: {e}")))?;
+        let image_bytes =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &b64_str)
+                .map_err(|e| TaskError::InvalidInput(format!("Invalid base64: {e}")))?;
 
         let img = image::load_from_memory(&image_bytes)
             .map_err(|e| TaskError::InvalidInput(format!("Invalid image: {e}")))?;

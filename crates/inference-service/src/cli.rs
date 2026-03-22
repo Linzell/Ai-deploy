@@ -66,6 +66,10 @@ pub struct Cli {
     #[arg(long)]
     pub port: Option<u16>,
 
+    /// HTTP server port.
+    #[arg(long)]
+    pub http_port: Option<u16>,
+
     /// Number of GPU layers to offload (for llama.cpp).
     #[arg(long)]
     pub n_gpu_layers: Option<u32>,

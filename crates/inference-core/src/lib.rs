@@ -18,5 +18,5 @@ pub use config::{
 pub use error::{Error, Result, TaskResult};
 pub use generation::{CacheDType, GenerationConfig, KvCacheConfig, ModelArchitecture};
 pub use loader::DataLoader;
-pub use model::Model;
+pub use model::{get_available_models, Model};
 pub use task::{Task, TaskChunk, TaskResult as TaskExecResult, TaskStream};
