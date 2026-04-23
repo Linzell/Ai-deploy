@@ -73,6 +73,11 @@ pub struct Cli {
     /// Number of GPU layers to offload (for llama.cpp).
     #[arg(long)]
     pub n_gpu_layers: Option<u32>,
+
+    /// Eagerly load the model at startup instead of waiting for the first request.
+    /// Default: true (model loads immediately). Use --no-eager to defer loading.
+    #[arg(long, default_missing_value = "true", default_value = "true", action = clap::ArgAction::Set)]
+    pub eager: bool,
 }
 
 /// Resolved CLI mode based on which arguments were provided.

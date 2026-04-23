@@ -47,9 +47,10 @@ use inference_core::task::{Task, TaskChunk, TaskResult as GrpcTaskResult, TaskSt
 use inference_core::{Config, KvCacheConfig};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokenizers::Tokenizer;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, info};
 
 /// Model architecture for text generation.
@@ -221,13 +222,13 @@ impl CandleModel {
 /// Supports Qwen2/3, Llama, Mistral, and Phi-3 model families.
 pub struct CandleTextGenTask {
     name: String,
-    model: Option<Arc<Mutex<CandleModel>>>,
+    model: Arc<RwLock<Option<Arc<Mutex<CandleModel>>>>>,
     tokenizer: Tokenizer,
     device: Device,
     dtype: DType,
     gen_config: CandleGenConfig,
     eos_token_ids: Vec<u32>,
-    is_loaded: bool,
+    is_loaded: AtomicBool,
     should_unload: std::sync::Arc<std::sync::Mutex<bool>>,
 }
 
@@ -320,13 +321,13 @@ impl CandleTextGenTask {
 
         Ok(Self {
             name,
-            model: Some(Arc::new(Mutex::new(model))),
+            model: Arc::new(RwLock::new(Some(Arc::new(Mutex::new(model))))),
             tokenizer,
             device,
             dtype,
             gen_config,
             eos_token_ids,
-            is_loaded: true,
+            is_loaded: AtomicBool::new(true),
             should_unload: std::sync::Arc::new(std::sync::Mutex::new(false)),
         })
     }
@@ -454,7 +455,7 @@ impl CandleTextGenTask {
     /// Generate text from input tokens.
     async fn generate(&self, prompt: &str) -> TaskResult<(String, usize)> {
         // Check if model is loaded
-        if !self.is_loaded {
+        if !self.is_loaded.load(Ordering::Relaxed) {
             return Err(TaskError::ModelNotFound(
                 "Model not loaded. Call reload() first.".into(),
             ));
@@ -490,7 +491,10 @@ impl CandleTextGenTask {
         );
 
         // Generation loop
-        let mut model = self.model.as_ref().unwrap().lock().await;
+        let model_guard = self.model.read().await;
+        let mut model = model_guard.as_ref().ok_or_else(|| {
+            TaskError::ModelNotFound("Model not loaded. Call reload() first.".into())
+        })?.lock().await;
         model
             .clear_kv_cache(&self.device, self.dtype)
             .map_err(|e| TaskError::Inference(format!("Failed to clear KV cache: {e}")))?;
@@ -615,7 +619,7 @@ impl CandleTextGenTask {
         prompt: String,
     ) -> TaskResult<impl futures::Stream<Item = TaskChunk>> {
         // Check if model is loaded
-        if !self.is_loaded {
+        if !self.is_loaded.load(Ordering::Relaxed) {
             return Err(TaskError::ModelNotFound(
                 "Model not loaded. Call reload() first.".into(),
             ));
@@ -746,7 +750,7 @@ impl Task for CandleTextGenTask {
     }
 
     fn is_ready(&self) -> bool {
-        self.is_loaded
+        self.is_loaded.load(Ordering::Relaxed)
     }
 
     fn should_unload(&self) -> bool {
@@ -758,11 +762,14 @@ impl Task for CandleTextGenTask {
 
         // For Candle models, reload means reinitializing the model
         // This is expensive, so we typically just clear KV cache and check if weights need refresh
-        if self.is_loaded {
+        if self.is_loaded.load(Ordering::Relaxed) {
             // Clear KV cache for fresh state
-            let mut model_guard = self.model.as_ref().unwrap().lock().await;
-            if let Err(e) = model_guard.clear_kv_cache(&self.device, self.dtype) {
-                return GrpcTaskResult::err(format!("Failed to clear KV cache: {e}"));
+            let model_guard = self.model.read().await;
+            if let Some(model_arc) = model_guard.as_ref() {
+                let mut model = model_arc.lock().await;
+                if let Err(e) = model.clear_kv_cache(&self.device, self.dtype) {
+                    return GrpcTaskResult::err(format!("Failed to clear KV cache: {e}"));
+                }
             }
             info!("Candle model reloaded (KV cache cleared)");
         } else {
@@ -773,13 +780,14 @@ impl Task for CandleTextGenTask {
         GrpcTaskResult::ok("Model reloaded (KV cache cleared)".to_string())
     }
 
-    async fn unload(&mut self) -> GrpcTaskResult {
+    async fn unload(&self) -> GrpcTaskResult {
         info!("Unloading candle model: {}", self.name);
 
         // Unload means dropping the model reference
         // The Arc will handle cleanup when all references are dropped
-        self.is_loaded = false;
-        self.model = None;
+        self.is_loaded.store(false, Ordering::Relaxed);
+        let mut model_guard = self.model.write().await;
+        *model_guard = None;
 
         info!("Candle model unloaded");
         GrpcTaskResult::ok("Model unloaded successfully".to_string())

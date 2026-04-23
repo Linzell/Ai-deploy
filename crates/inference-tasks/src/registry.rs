@@ -14,14 +14,13 @@
 use crate::echo::EchoTask;
 use crate::error::{TaskError, TaskResult};
 use async_trait::async_trait;
-use inference_core::task::{
-    Task, TaskResult as CoreTaskResult,
-};
+use inference_core::task::{Task, TaskResult as CoreTaskResult};
 use inference_core::{BackendType, Config, DataLoader, DataSourceType};
 use inference_loader_hf::HfLoader;
 use inference_loader_s3::S3Loader;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tracing::info;
 
 // ONNX backend types (always available)
@@ -50,16 +49,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// 2. On first execute() call, loads the model and then executes
 /// 3. Supports reload() and unload() methods
 pub struct LazyTask {
-    inner: Option<Box<dyn Task>>,
+    config: Config,
+    task: Mutex<Option<Arc<dyn Task>>>,
     loaded: Arc<AtomicBool>,
     name: String,
 }
 
 impl LazyTask {
-    pub fn new(task: Box<dyn Task>) -> Self {
-        let name = task.name().to_string();
+    pub fn new(config: Config) -> Self {
+        let name = config.effective_task_name();
         Self {
-            inner: Some(task),
+            config,
+            task: Mutex::new(None),
             loaded: Arc::new(AtomicBool::new(false)),
             name,
         }
@@ -86,17 +87,47 @@ impl Task for LazyTaskWrapper {
     }
 
     async fn execute(&self, payload: &str, request_id: &str) -> CoreTaskResult {
-        let inner = Arc::clone(&self.inner);
-        if !inner.loaded.load(Ordering::Relaxed) {
-            info!("Loading model for task '{}'", inner.name);
-            inner.loaded.store(true, Ordering::Relaxed);
+        let task = {
+            let mut guard = self.inner.task.lock().await;
+            if guard.is_none() {
+                info!("Loading model for task '{}'", self.inner.name);
+                match TaskRegistry::create(&self.inner.config).await {
+                    Ok(t) => {
+                        self.inner.loaded.store(true, Ordering::Relaxed);
+                        let arc: Arc<dyn inference_core::Task> = Arc::from(t);
+                        *guard = Some(arc.clone());
+                        arc
+                    }
+                    Err(e) => {
+                        return CoreTaskResult::err(format!("Failed to create task: {e}"));
+                    }
+                }
+            } else {
+                guard.as_ref().unwrap().clone()
+            }
+        };
+        task.execute(payload, request_id).await
+    }
+
+    async fn reload(&self) -> CoreTaskResult {
+        let task = {
+            let guard = self.inner.task.lock().await;
+            guard.as_ref().cloned()
+        };
+        match task {
+            Some(t) => t.reload().await,
+            None => CoreTaskResult::ok("Model not loaded yet".to_string()),
         }
-        inner
-            .inner
-            .as_ref()
-            .unwrap()
-            .execute(payload, request_id)
-            .await
+    }
+
+    async fn unload(&self) -> CoreTaskResult {
+        let mut guard = self.inner.task.lock().await;
+        if let Some(task) = guard.take() {
+            self.inner.loaded.store(false, Ordering::Relaxed);
+            task.unload().await
+        } else {
+            CoreTaskResult::ok("Model already unloaded".to_string())
+        }
     }
 
     fn is_ready(&self) -> bool {
@@ -115,8 +146,7 @@ impl TaskRegistry {
     /// 2. On first execute() call, loads the model and then executes
     /// 3. Supports reload() and unload() methods
     pub async fn create_lazy(config: &Config) -> TaskResult<Box<dyn Task>> {
-        let task = Self::create(config).await?;
-        let lazy_task = LazyTask::new(task);
+        let lazy_task = LazyTask::new(config.clone());
         Ok(Box::new(LazyTaskWrapper::new(lazy_task)))
     }
 

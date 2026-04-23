@@ -19,4 +19,5 @@ bytes.workspace = true
 tokio-stream = "0.1"
 
 [dev-dependencies]
-cargo-audit = "0.17"
+# cargo-audit should be installed globally (`cargo install cargo-audit`)
+# or run in CI without being a project dependency.

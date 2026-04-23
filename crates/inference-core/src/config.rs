@@ -1199,15 +1199,22 @@ impl Config {
     /// - `flash_attention = true` (faster attention on Metal/CUDA)
     /// - `cache_dtype_k/v = Q8_0` (reduces memory bandwidth, ~lossless)
     fn resolve_auto_device(&mut self) {
-        if !self.device.is_auto() {
-            return;
+        // If device is still Auto, probe for GPU
+        if self.device.is_auto() {
+            self.device = auto_detect_device();
         }
 
-        self.device = auto_detect_device();
+        // Resolve generic "Gpu" to the platform-specific variant (Metal/CUDA).
+        // This ensures downstream code sees a concrete device type.
+        if self.device == DeviceType::Gpu {
+            self.device = self.device.resolve();
+        }
 
-        // For llama backend: if GPU was detected and n_gpu_layers is still 0
-        // (default = no GPU layers), offload all layers to GPU automatically.
-        if self.device != DeviceType::Cpu
+        // For llama backend: if a GPU device is selected (or auto-detected) and
+        // n_gpu_layers is still 0 (default = no GPU layers), offload all layers
+        // to GPU automatically. This applies regardless of whether the user set
+        // --device gpu explicitly or it was auto-detected.
+        if self.device.is_gpu()
             && self.n_gpu_layers == 0
             && matches!(self.backend, BackendType::Llama)
         {
@@ -1219,7 +1226,7 @@ impl Config {
         // KV cache if the user hasn't explicitly configured them.
         // Flash attention is a major throughput win on Metal/CUDA.
         // Q8_0 KV cache reduces memory bandwidth with negligible quality loss.
-        if self.device != DeviceType::Cpu && matches!(self.backend, BackendType::Llama) {
+        if self.device.is_gpu() && matches!(self.backend, BackendType::Llama) {
             if !self.kv_cache.flash_attention {
                 info!("Auto-enabling flash attention for llama backend with GPU");
                 self.kv_cache.flash_attention = true;

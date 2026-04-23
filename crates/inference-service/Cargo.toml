@@ -8,7 +8,7 @@ description = "Main entrypoint for inference service"
 workspace = true
 
 [features]
-default = ["candle", "llama", "http"]
+default = ["candle", "llama", "http", "grpc"]
 # Metal GPU is auto-enabled on macOS via target-specific deps in inference-candle
 # and inference-llama — no feature flag needed for macOS users.
 # The "metal" feature below is kept for backward compatibility / explicit override.
@@ -28,7 +28,7 @@ llama-cuda = ["llama", "inference-tasks/llama-cuda"]
 # TLS support for gRPC server
 tls = ["inference-grpc/tls"]
 # HTTP server (OpenAI-compatible endpoints)
-http = ["inference-http"]
+http = ["dep:inference-http", "dep:axum", "dep:tower", "dep:tower-http"]
 # gRPC server
 grpc = ["inference-grpc/grpc"]
 
@@ -72,9 +72,9 @@ reqwest = { version = "0.12", features = ["json"] }
 
 # HTTP server (OpenAI-compatible endpoints)
 inference-http = { path = "../inference-http", optional = true }
-axum = { version = "0.8", features = ["macros", "tokio"] }
-tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "trace"] }
+axum = { version = "0.8", features = ["macros", "tokio"], optional = true }
+tower = { version = "0.5", optional = true }
+tower-http = { version = "0.6", features = ["cors", "trace"], optional = true }
 
 # Error handling
 anyhow.workspace = true

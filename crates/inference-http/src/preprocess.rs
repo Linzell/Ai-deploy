@@ -6,6 +6,14 @@
 use serde::{Deserialize, Serialize};
 use std::fmt::Write;
 
+/// Hard upper bound for `max_tokens` to prevent unbounded generation / DoS.
+const MAX_TOKENS_HARD_LIMIT: u32 = 32_768;
+
+/// Clamp `max_tokens` to a safe range [1, MAX_TOKENS_HARD_LIMIT].
+fn clamp_max_tokens(v: u32) -> u32 {
+    v.clamp(1, MAX_TOKENS_HARD_LIMIT)
+}
+
 /// OpenAI chat message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
@@ -119,7 +127,7 @@ pub fn preprocess_chat_completion(body: &serde_json::Value) -> (String, Option<f
     let max_tokens = body
         .get("max_tokens")
         .and_then(serde_json::Value::as_u64)
-        .map(|n| n as u32);
+        .map(|n| clamp_max_tokens(n as u32));
 
     (prompt, temperature, max_tokens)
 }
@@ -138,7 +146,7 @@ pub fn preprocess_completion(body: &serde_json::Value) -> (String, Option<f32>, 
     let max_tokens = body
         .get("max_tokens")
         .and_then(serde_json::Value::as_u64)
-        .map(|n| n as u32);
+        .map(|n| clamp_max_tokens(n as u32));
 
     (prompt, temperature, max_tokens)
 }

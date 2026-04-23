@@ -44,8 +44,9 @@ use clap::Parser;
 use cli::{Cli, CliMode};
 use inference_core::Config;
 use inference_tasks::TaskRegistry;
+use interactive::{Essentials, ServerMode};
 use std::env;
-use tracing::{error, info, warn, Level};
+use tracing::{error, info, warn};
 use tracing_subscriber::fmt;
 
 #[tokio::main]
@@ -57,26 +58,31 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.mode() {
         CliMode::Browse => {
-            // Interactive: family -> task -> model -> start
+            // Interactive: essentials -> family -> task -> model -> start
             let selection = interactive::select_model().await?;
             let Some(selection) = selection else {
                 return Ok(()); // User pressed Escape
             };
             init_logging();
-            run_with_model(&selection.model_id, &cli).await
+            run_with_model(&selection.model_id, &selection.essentials, &cli).await
         }
         CliMode::SearchTask(task) => {
-            // Interactive: model selection for a known task -> start
+            // Interactive: essentials -> model selection for a known task -> start
             let selection = interactive::select_model_for_task_str(&task).await?;
             let Some(selection) = selection else {
                 return Ok(()); // User pressed Escape
             };
             init_logging();
-            run_with_model(&selection.model_id, &cli).await
+            run_with_model(&selection.model_id, &selection.essentials, &cli).await
         }
         CliMode::RunModel(model_id) => {
             init_logging();
-            run_with_model(&model_id, &cli).await
+            let essentials = Essentials {
+                server_mode: ServerMode::Both,
+                device: cli.device.clone().unwrap_or_else(|| "auto".to_string()),
+                backend: cli.backend.clone().unwrap_or_else(|| "auto".to_string()),
+            };
+            run_with_model(&model_id, &essentials, &cli).await
         }
         CliMode::RunConfig(config_path) => {
             init_logging();
@@ -86,19 +92,67 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// Initialize tracing/logging — JSON format if MAIIA_AI_LOG_FORMAT=json.
+///
+/// Uses `EnvFilter` for fine-grained level control:
+/// - `RUST_LOG` env var takes priority if set
+/// - Otherwise a sensible default: INFO for the service, WARN for noisy
+///   backend crates (ONNX, Candle, tokenizers, hf_hub, etc.)
 fn init_logging() {
+    use tracing_subscriber::EnvFilter;
+
+    let default_filter = [
+        // Service-level: keep INFO for visibility
+        "inference_service=info",
+        // Core config: keep INFO for startup diagnostics
+        "inference_core=info",
+        // Task registry: only WARN — model loading milestones are INFO-spammy;
+        // the important "Loading model..." and "Task created" are already in inference_service
+        "inference_tasks=warn",
+        // Backend crates: too noisy at INFO, suppress to WARN
+        // Note: inference_llama routes native llama.cpp logs through tracing,
+        // so at WARN you'll see model load errors but not the 200-line startup spam.
+        // Use RUST_LOG=inference_llama=info to debug model loading issues.
+        "inference_onnx=warn",
+        "inference_candle=warn",
+        "inference_llama=warn",
+        "inference_preprocess=warn",
+        "inference_postprocess=warn",
+        "inference_http=warn",
+        "inference_grpc=warn",
+        "inference_loader_hf=warn",
+        "inference_loader_s3=warn",
+        // OpenTelemetry SDK: extremely noisy at INFO
+        "opentelemetry=warn",
+        "opentelemetry_sdk=warn",
+        // Third-party noise
+        "tokenizers=warn",
+        "hf_hub=warn",
+        "onnxruntime=warn",
+        "ort=warn",
+        "reqwest=warn",
+        "hyper=warn",
+        "h2=warn",
+        "tonic=warn",
+        // Catch-all: warn for anything not explicitly set above
+        "warn",
+    ]
+    .join(",");
+
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(&default_filter));
+
     let log_format = env::var("MAIIA_AI_LOG_FORMAT").unwrap_or_default();
     if log_format.eq_ignore_ascii_case("json") {
         fmt::Subscriber::builder()
+            .with_env_filter(filter)
             .json()
-            .with_max_level(Level::INFO)
             .with_target(true)
             .with_thread_ids(true)
             .with_span_list(true)
             .init();
     } else {
         fmt::Subscriber::builder()
-            .with_max_level(Level::INFO)
+            .with_env_filter(filter)
             .with_target(true)
             .with_thread_ids(true)
             .init();
@@ -114,7 +168,7 @@ fn init_logging() {
 const LARGE_MODEL_THRESHOLD: u64 = 2 * 1024 * 1024 * 1024;
 
 /// --model mode: fetch HF metadata, auto-derive config, and start server.
-async fn run_with_model(model_id: &str, cli: &Cli) -> anyhow::Result<()> {
+async fn run_with_model(model_id: &str, essentials: &Essentials, cli: &Cli) -> anyhow::Result<()> {
     info!(model = model_id, "Fetching model info from HuggingFace");
 
     let mut model_info = hf_api::get_model_info(model_id).await?;
@@ -228,22 +282,41 @@ async fn run_with_model(model_id: &str, cli: &Cli) -> anyhow::Result<()> {
         }
     }
 
-    // Allow CLI --backend to override
-    let backend_str = cli.backend.as_deref().unwrap_or(&inferred_backend);
+    // Allow CLI --backend to override, then interactive essentials, then auto
+    let backend_str = match cli.backend.as_deref() {
+        Some(b) => b.to_string(),
+        None if essentials.backend != "auto" => essentials.backend.clone(),
+        _ => inferred_backend.clone(),
+    };
 
     // --- GGUF auto-routing for large text-generation models ---
     // For large models (>2GB safetensors), llama.cpp with GGUF quantized weights
-    // is dramatically faster than Candle for autoregressive decoding on ALL devices:
+    // is dramatically faster for autoregressive decoding on ALL devices:
     // - CPU: SIMD-optimized GGUF (~4GB Q4_K_M) vs broken F16 / impractical F32
     // - Metal: llama.cpp Metal kernels >> Candle Metal for token-by-token generation
     // - CUDA: llama.cpp CUDA kernels >> Candle CUDA for the same reason
     //
     // Metal is auto-compiled on macOS via target-specific deps, and CUDA requires
     // explicit --features all-cuda.
+
+    // Allow CLI --device to override, then interactive essentials, then auto-detect
     let effective_device = match cli.device.as_deref() {
         Some(d) => inference_core::DeviceType::from(d),
+        None if essentials.device != "auto" => {
+            inference_core::DeviceType::from(essentials.device.as_str())
+        }
         None => inference_core::auto_detect_device(),
     };
+
+    // --- GGUF auto-routing for large text-generation models ---
+    // For large models (>2GB safetensors), llama.cpp with GGUF quantized weights
+    // is dramatically faster for autoregressive decoding on ALL devices:
+    // - CPU: SIMD-optimized GGUF (~4GB Q4_K_M) vs broken F16 / impractical F32
+    // - Metal: llama.cpp Metal kernels >> Candle Metal for token-by-token generation
+    // - CUDA: llama.cpp CUDA kernels >> Candle CUDA for the same reason
+    //
+    // Metal is auto-compiled on macOS via target-specific deps, and CUDA requires
+    // explicit --features all-cuda.
 
     let gpu_actually_available = inference_tasks::is_gpu_compiled();
     let _is_gpu = match &effective_device {
@@ -289,7 +362,7 @@ async fn run_with_model(model_id: &str, cli: &Cli) -> anyhow::Result<()> {
                     gguf_file = ?gguf_file,
                     "Auto-routing to GGUF variant via llama.cpp"
                 );
-                ("llama", gguf_model_id, None, gguf_file)
+                ("llama".to_string(), gguf_model_id, None, gguf_file)
             }
             Ok(None) => {
                 warn!(
@@ -338,13 +411,22 @@ async fn run_with_model(model_id: &str, cli: &Cli) -> anyhow::Result<()> {
         "Auto-derived configuration"
     );
 
+    // Use the already-resolved effective device string for config
+    let effective_device_str = match &effective_device {
+        inference_core::DeviceType::Auto => "auto",
+        inference_core::DeviceType::Cpu => "cpu",
+        inference_core::DeviceType::Gpu => "gpu",
+        inference_core::DeviceType::Cuda => "cuda",
+        inference_core::DeviceType::Metal => "metal",
+    };
+
     let config = Config::from_model_args(
         &final_model_id,
         &task_type,
-        final_backend,
+        &final_backend,
         final_onnx_file.as_deref(),
         final_gguf_file.as_deref(),
-        cli.device.as_deref(),
+        Some(effective_device_str),
         cli.max_tokens,
         cli.temperature,
         cli.top_p,
@@ -354,7 +436,7 @@ async fn run_with_model(model_id: &str, cli: &Cli) -> anyhow::Result<()> {
         cli.n_gpu_layers,
     );
 
-    start_server(config).await
+    start_server(config, essentials.server_mode, cli.eager).await
 }
 
 /// --config mode: load TOML config (legacy path), apply CLI overrides, and start server.
@@ -398,11 +480,60 @@ async fn run_with_config(config_path: &str, cli: &Cli) -> anyhow::Result<()> {
         config.n_gpu_layers = v;
     }
 
-    start_server(config).await
+    start_server(config, ServerMode::Both, cli.eager).await
 }
 
-/// Validate config, create task, and start gRPC server.
-async fn start_server(config: Config) -> anyhow::Result<()> {
+/// When a GGUF model fails to load via llama.cpp, try to find the original
+/// safetensors model on HuggingFace and build a new Config for the Candle backend.
+async fn try_fallback_to_safetensors(config: &Config) -> anyhow::Result<Config> {
+    let model_id = config.model_path.as_deref().ok_or_else(|| {
+        anyhow::anyhow!("No model path in config")
+    })?;
+
+    let variant = hf_api::find_safetensors_variant(model_id).await?;
+    let variant = variant.ok_or_else(|| {
+        anyhow::anyhow!(
+            "No safetensors variant found for '{model_id}'. \
+             The GGUF format may be incompatible with this llama.cpp version. \
+             Try a different model or quantization."
+        )
+    })?;
+
+    // Build a new config pointing to the safetensors model with Candle backend
+    let device_str = match &config.device {
+        inference_core::DeviceType::Auto => "auto",
+        inference_core::DeviceType::Cpu => "cpu",
+        inference_core::DeviceType::Gpu => "gpu",
+        inference_core::DeviceType::Cuda => "cuda",
+        inference_core::DeviceType::Metal => "metal",
+    };
+
+    let new_config = Config::from_model_args(
+        &variant.id,
+        &config.task_type.to_string(),
+        "candle", // Switch to Candle backend
+        None,     // No ONNX file
+        None,     // No GGUF file
+        Some(device_str),
+        Some(config.max_tokens),
+        Some(config.temperature),
+        Some(config.top_p),
+        Some(config.num_threads),
+        Some(config.grpc_port),
+        Some(config.http_port),
+        Some(config.n_gpu_layers),
+    );
+
+    Ok(new_config)
+}
+
+/// Validate config, create task, and start server.
+///
+/// The `server_mode` parameter controls which protocol to serve on,
+/// selected interactively or falling back to `Both`.
+/// The `eager` flag controls whether the model is loaded at startup (true)
+/// or deferred until the first request (false).
+async fn start_server(config: Config, server_mode: ServerMode, eager: bool) -> anyhow::Result<()> {
     if let Err(e) = config.validate() {
         error!("Configuration validation failed: {}", e);
         return Err(e.into());
@@ -445,40 +576,131 @@ async fn start_server(config: Config) -> anyhow::Result<()> {
         "Configuration loaded"
     );
 
-    // Create lazy task wrapper that defers model loading until first request
-    let task = match TaskRegistry::create_lazy(&config).await {
-        Ok(t) => t,
-        Err(e) => {
-            error!("Failed to create task: {}", e);
-            return Err(anyhow::anyhow!("{e}"));
+    // Create task — eager or lazy loading based on --eager flag
+    let task = if eager {
+        // Eager: create and load the model immediately before starting the server.
+        // This ensures the first request is fast, but startup takes longer.
+        info!("Loading model eagerly at startup (--eager enabled)");
+        match TaskRegistry::create(&config).await {
+            Ok(t) => t,
+            Err(e) => {
+                // If this is a GGUF/llama model that failed to load, try to fall back
+                // to the same model's safetensors weights via Candle.
+                // This is NOT a different model — it's the same weights in a different
+                // format. GGUF is a quantized repackaging of the original safetensors.
+                let err_msg = format!("{e}");
+                if config.backend == inference_core::BackendType::Llama
+                    && config.gguf_file.is_some()
+                {
+                    warn!(
+                        error = %err_msg,
+                        "GGUF model failed to load via llama.cpp — \
+                         attempting to load the same model via Candle (safetensors format)"
+                    );
+                    match try_fallback_to_safetensors(&config).await {
+                        Ok(fallback_config) => {
+                            info!(
+                                original_model = ?config.model_path,
+                                fallback_model = ?fallback_config.model_path,
+                                "Found same model with safetensors weights — \
+                                 retrying with Candle backend (same weights, different format)"
+                            );
+                            match TaskRegistry::create(&fallback_config).await {
+                                Ok(t) => t,
+                                Err(fe) => {
+                                    error!("Safetensors fallback also failed: {}", fe);
+                                    return Err(anyhow::anyhow!(
+                                        "GGUF load failed: {err_msg}\n\
+                                         Safetensors fallback also failed: {fe}\n\n\
+                                         The GGUF format may be incompatible with this llama.cpp version. \
+                                         This is a known issue with Qwen3.5/Qwen3.6 models — \
+                                         their rope.dimension_sections format is not yet supported."
+                                    ));
+                                }
+                            }
+                        }
+                        Err(fe) => {
+                            error!("No safetensors variant found: {fe}");
+                            return Err(anyhow::anyhow!(
+                                "GGUF load failed: {err_msg}\n\n\
+                                 No safetensors version of this model was found on HuggingFace. \
+                                 The GGUF format may be incompatible with this llama.cpp version. \
+                                 This is a known issue with Qwen3.5/Qwen3.6 models."
+                            ));
+                        }
+                    }
+                } else {
+                    error!("Failed to create and load task: {}", e);
+                    return Err(anyhow::anyhow!("{e}"));
+                }
+            }
+        }
+    } else {
+        // Lazy: defer model loading until the first request arrives.
+        // Fast startup but first request is slow.
+        match TaskRegistry::create_lazy(&config).await {
+            Ok(t) => t,
+            Err(e) => {
+                error!("Failed to create task: {}", e);
+                return Err(anyhow::anyhow!("{e}"));
+            }
         }
     };
 
     let task_name = task.name();
-    info!(task_name, "Task created (lazy loading enabled)");
-
-    // Start server (HTTP or gRPC based on features)
-    #[cfg(all(feature = "http", not(feature = "grpc")))]
-    {
-        #[cfg(feature = "http")]
-        start_http_server(task, config, otel_guard).await?;
+    if eager {
+        info!(task_name, "Task created and model loaded (eager mode)");
+    } else {
+        info!(task_name, "Task created (lazy loading — model loads on first request)");
     }
 
-    #[cfg(all(not(feature = "http"), feature = "grpc"))]
-    {
-        start_grpc_server(task, config, otel_guard).await?;
-    }
+    // Start server based on runtime server_mode selection
+    match server_mode {
+        ServerMode::Grpc => {
+            #[cfg(feature = "grpc")]
+            {
+                start_grpc_server(task, config, otel_guard).await?;
+            }
+            #[cfg(not(feature = "grpc"))]
+            {
+                error!("gRPC server mode selected but 'grpc' feature is not compiled in.");
+                return Err(anyhow::anyhow!(
+                    "gRPC not available — rebuild with --features grpc"
+                ));
+            }
+        }
+        ServerMode::Http => {
+            #[cfg(feature = "http")]
+            {
+                start_http_server(task, config, otel_guard).await?;
+            }
+            #[cfg(not(feature = "http"))]
+            {
+                error!("HTTP server mode selected but 'http' feature is not compiled in.");
+                return Err(anyhow::anyhow!(
+                    "HTTP not available — rebuild with --features http"
+                ));
+            }
+        }
+        ServerMode::Both => {
+            let http_available = cfg!(feature = "http");
+            let grpc_available = cfg!(feature = "grpc");
 
-    #[cfg(all(feature = "http", feature = "grpc"))]
-    {
-        // Both enabled - prefer gRPC for backward compatibility
-        start_grpc_server(task, config, otel_guard).await?;
-    }
+            if !http_available && !grpc_available {
+                error!("No server protocol enabled. Enable 'http' or 'grpc' feature.");
+                return Err(anyhow::anyhow!("No server protocol enabled"));
+            }
 
-    #[cfg(not(any(feature = "http", feature = "grpc")))]
-    {
-        error!("No server protocol enabled. Enable 'http' or 'grpc' feature.");
-        return Err(anyhow::anyhow!("No server protocol enabled"));
+            // If both features are compiled, prefer gRPC (backward compat)
+            // If only one is available, use that one.
+            if grpc_available {
+                #[cfg(feature = "grpc")]
+                start_grpc_server(task, config, otel_guard).await?;
+            } else {
+                #[cfg(feature = "http")]
+                start_http_server(task, config, otel_guard).await?;
+            }
+        }
     }
 
     Ok(())
@@ -519,25 +741,6 @@ async fn start_http_server(
     let task_arc: Arc<dyn inference_core::Task> = task.into();
     let wrapper = HttpServerWrapper::new(task_arc, config);
     wrapper.serve().await?;
-
-    // Flush OTel telemetry on shutdown
-    if let Some(guard) = otel_guard {
-        guard.shutdown();
-    }
-
-    Ok(())
-}
-
-#[cfg(feature = "grpc")]
-async fn start_grpc_server(
-    task: Box<dyn inference_core::Task>,
-    config: Config,
-    otel_guard: Option<telemetry::TelemetryGuard>,
-) -> anyhow::Result<()> {
-    info!("Starting gRPC server");
-
-    let server = WorkerServer::from_boxed(task, config);
-    server.serve_with_shutdown().await?;
 
     // Flush OTel telemetry on shutdown
     if let Some(guard) = otel_guard {

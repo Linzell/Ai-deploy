@@ -27,7 +27,7 @@ tracing.workspace = true
 thiserror.workspace = true
 
 # llama.cpp Rust bindings (CPU base)
-llama-cpp-2 = "0.1"
+llama-cpp-2 = "0.1.145"
 
 # UTF-8 decoding for token output
 encoding_rs = "0.8"
@@ -40,7 +40,7 @@ async-stream = "0.3"
 
 # --- Auto-enable Metal on macOS ---
 [target.'cfg(target_os = "macos")'.dependencies]
-llama-cpp-2 = { version = "0.1", features = ["metal"] }
+llama-cpp-2 = { version = "0.1.145", features = ["metal"] }
 
 [dev-dependencies]
 tempfile = "3"

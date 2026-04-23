@@ -296,20 +296,21 @@ pub fn load_pytorch_bin(
 /// This is needed because candle's pickle loader only supports zip-based
 /// PyTorch files, while some older models use raw pickle protocol 2.
 fn convert_pytorch_to_safetensors(src: &Path, dst: &Path) -> TaskResult<()> {
-    let script = format!(
-        r#"
+    // Pass paths as CLI arguments to avoid injection via string interpolation.
+    let script = r#"
 import torch, safetensors.torch, sys
-state = torch.load("{src}", map_location="cpu", weights_only=True)
-safetensors.torch.save_file(state, "{dst}")
-"#,
-        src = src.display(),
-        dst = dst.display(),
-    );
+if len(sys.argv) != 3:
+    raise SystemExit("Usage: script.py <src> <dst>")
+src = sys.argv[1]
+dst = sys.argv[2]
+state = torch.load(src, map_location="cpu", weights_only=True)
+safetensors.torch.save_file(state, dst)
+"#;
 
     info!(src = %src.display(), dst = %dst.display(), "Converting pytorch_model.bin to safetensors via Python");
 
     let output = std::process::Command::new("python3")
-        .args(["-c", &script])
+        .args(["-c", script, &src.display().to_string(), &dst.display().to_string()])
         .output()
         .map_err(|e| {
             TaskError::ModelLoad(format!(
@@ -543,7 +544,15 @@ fn resolve_compute_dtype_raw(kv_cache: &KvCacheConfig, model_dtype: Option<DType
         CacheDType::F32 => DType::F32,
         CacheDType::F16 => DType::F16,
         CacheDType::BF16 => DType::BF16,
-        CacheDType::Q8_0 | CacheDType::Q4_0 => {
+        CacheDType::Q8_0
+        | CacheDType::Q4_0
+        | CacheDType::Q4_K
+        | CacheDType::Q5_K
+        | CacheDType::Q6_K
+        | CacheDType::Q8_K
+        | CacheDType::TQ1_0
+        | CacheDType::TQ2_0
+        | CacheDType::MXFP4 => {
             warn!(
                 requested = %target,
                 "Candle does not support quantized KV cache ({target}). \
@@ -558,10 +567,14 @@ fn resolve_compute_dtype_raw(kv_cache: &KvCacheConfig, model_dtype: Option<DType
 /// Precision rank for `CacheDType` (higher = more precision).
 fn cache_dtype_precision_rank(dt: CacheDType) -> u8 {
     match dt {
-        CacheDType::Q4_0 => 0,
-        CacheDType::Q8_0 => 1,
-        CacheDType::F16 | CacheDType::BF16 => 2,
-        CacheDType::F32 => 3,
+        CacheDType::TQ1_0 => 0,
+        CacheDType::TQ2_0 => 1,
+        CacheDType::MXFP4 | CacheDType::Q4_0 | CacheDType::Q4_K => 2,
+        CacheDType::Q5_K => 3,
+        CacheDType::Q6_K => 4,
+        CacheDType::Q8_0 | CacheDType::Q8_K => 5,
+        CacheDType::F16 | CacheDType::BF16 => 6,
+        CacheDType::F32 => 7,
     }
 }
 
@@ -819,17 +832,24 @@ mod tests {
 
     #[test]
     fn test_resolve_compute_dtype_quantized_falls_back_to_f16() {
-        let kv = KvCacheConfig::default().with_cache_dtype(CacheDType::Q8_0);
-        assert_eq!(
-            resolve_compute_dtype(&kv, None, &Device::Cpu, 0),
-            DType::F16
-        );
-
-        let kv = KvCacheConfig::default().with_cache_dtype(CacheDType::Q4_0);
-        assert_eq!(
-            resolve_compute_dtype(&kv, None, &Device::Cpu, 0),
-            DType::F16
-        );
+        for dtype in [
+            CacheDType::Q8_0,
+            CacheDType::Q4_0,
+            CacheDType::Q4_K,
+            CacheDType::Q5_K,
+            CacheDType::Q6_K,
+            CacheDType::Q8_K,
+            CacheDType::TQ1_0,
+            CacheDType::TQ2_0,
+            CacheDType::MXFP4,
+        ] {
+            let kv = KvCacheConfig::default().with_cache_dtype(dtype);
+            assert_eq!(
+                resolve_compute_dtype(&kv, None, &Device::Cpu, 0),
+                DType::F16,
+                "{dtype} should fall back to F16 in Candle"
+            );
+        }
     }
 
     #[test]

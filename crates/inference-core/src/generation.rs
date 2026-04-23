@@ -152,9 +152,13 @@ impl ModelArchitecture {
 /// | F32        | Yes       | Yes    | Yes  |
 /// | F16        | Yes       | Possible (cast) | No |
 /// | BF16       | Yes       | Device-dependent | No |
-/// | Q8_0       | Yes       | No     | No   |
-/// | Q4_0       | Yes       | No     | No   |
+/// | Q8_0 / Q8_K| Yes       | No     | No   |
+/// | Q4_0 / Q4_K| Yes       | No     | No   |
+/// | Q5_K / Q6_K| Yes       | No     | No   |
+/// | TQ1_0 / TQ2_0 | Yes  | No     | No   |
+/// | MXFP4      | Yes       | No     | No   |
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(non_camel_case_types)]
 pub enum CacheDType {
     /// Full precision — maximum quality, most memory.
     F32,
@@ -162,12 +166,26 @@ pub enum CacheDType {
     F16,
     /// BFloat16 — similar to F16, better dynamic range, hardware-dependent.
     BF16,
-    /// 8-bit quantized — ~4x savings, nearly lossless.
+    /// 8-bit block-quantized — ~4x savings, nearly lossless.
     /// Recommended as a safe default for llama.cpp.
     Q8_0,
-    /// 4-bit quantized — ~8x savings.
+    /// 4-bit block-quantized — ~8x savings.
     /// Good for V cache; K cache is more sensitive to quantization.
     Q4_0,
+    /// 4-bit K-quantized (improved, mixed precision). Better quality than Q4_0.
+    Q4_K,
+    /// 5-bit K-quantized (improved, mixed precision).
+    Q5_K,
+    /// 6-bit K-quantized (improved, mixed precision).
+    Q6_K,
+    /// 8-bit K-quantized (improved, mixed precision). Higher quality than Q8_0.
+    Q8_K,
+    /// ~1-bit TurboQuant (Google Research). Extreme compression, model-dependent quality.
+    TQ1_0,
+    /// ~2-bit TurboQuant (Google Research). Better quality than TQ1_0.
+    TQ2_0,
+    /// Microscaling FP4 (4-bit float). Experimental, hardware-dependent.
+    MXFP4,
 }
 
 impl fmt::Display for CacheDType {
@@ -178,6 +196,13 @@ impl fmt::Display for CacheDType {
             Self::BF16 => write!(f, "bf16"),
             Self::Q8_0 => write!(f, "q8_0"),
             Self::Q4_0 => write!(f, "q4_0"),
+            Self::Q4_K => write!(f, "q4_k"),
+            Self::Q5_K => write!(f, "q5_k"),
+            Self::Q6_K => write!(f, "q6_k"),
+            Self::Q8_K => write!(f, "q8_k"),
+            Self::TQ1_0 => write!(f, "tq1_0"),
+            Self::TQ2_0 => write!(f, "tq2_0"),
+            Self::MXFP4 => write!(f, "mxfp4"),
         }
     }
 }
@@ -193,6 +218,13 @@ impl CacheDType {
             "bf16" => Some(Self::BF16),
             "q8_0" | "q8" => Some(Self::Q8_0),
             "q4_0" | "q4" => Some(Self::Q4_0),
+            "q4_k" => Some(Self::Q4_K),
+            "q5_k" => Some(Self::Q5_K),
+            "q6_k" => Some(Self::Q6_K),
+            "q8_k" => Some(Self::Q8_K),
+            "tq1_0" | "turbo1" | "tq1" => Some(Self::TQ1_0),
+            "tq2_0" | "turbo2" | "tq2" => Some(Self::TQ2_0),
+            "mxfp4" => Some(Self::MXFP4),
             _ => None,
         }
     }

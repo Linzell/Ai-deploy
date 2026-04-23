@@ -6,8 +6,18 @@
 
 use serde::Deserialize;
 use std::path::Path;
+use std::time::Duration;
 
 const HF_API_BASE: &str = "https://huggingface.co/api/models";
+const HF_API_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Create an HTTP client with a bounded timeout for HuggingFace API calls.
+fn hf_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(HF_API_TIMEOUT)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
 
 /// Helper: check if a filename has a given extension (case-insensitive).
 fn has_extension(filename: &str, ext: &str) -> bool {
@@ -246,11 +256,6 @@ impl HfModelInfo {
     /// file — the caller (`run_with_model`) is responsible for searching for
     /// an ONNX variant on HuggingFace.
     pub fn infer_backend(&self) -> (&str, Option<&str>, Option<&str>) {
-        // GGUF files -> llama backend
-        if self.has_gguf() {
-            return ("llama", None, self.find_gguf_file());
-        }
-
         let tag = self.pipeline_tag.as_deref().unwrap_or("");
 
         // Tasks Candle supports via decoder/seq2seq backends
@@ -262,6 +267,19 @@ impl HfModelInfo {
                 | "translation"
                 | "summarization"
         );
+
+        // For text-generation with safetensors, prefer Candle over llama/GGUF.
+        // Candle loads safetensors directly and is more compatible — GGUF models
+        // may use formats not yet supported by the bundled llama.cpp version
+        // (e.g., qwen35.rope.dimension_sections length mismatches).
+        if candle_gen_supported && self.has_safetensors() {
+            return ("candle", None, None);
+        }
+
+        // GGUF files without safetensors -> llama backend
+        if self.has_gguf() {
+            return ("llama", None, self.find_gguf_file());
+        }
 
         // Tasks Candle supports via encoder backend (BERT-family)
         let task_type = inference_core::TaskType::new(tag);
@@ -397,7 +415,7 @@ pub async fn search_models(task: &str, limit: usize) -> anyhow::Result<Vec<HfMod
         "{HF_API_BASE}?pipeline_tag={task}&sort=downloads&direction=-1&limit={fetch_limit}"
     );
 
-    let client = reqwest::Client::new();
+    let client = hf_client();
     let resp = client
         .get(&url)
         .header("User-Agent", "maiia-inference-service")
@@ -424,11 +442,54 @@ pub async fn search_models(task: &str, limit: usize) -> anyhow::Result<Vec<HfMod
     Ok(models)
 }
 
+/// Search HuggingFace API for models matching a text query, optionally filtered by task.
+///
+/// Unlike `search_models` which returns the most-downloaded models for a task,
+/// this performs a free-text search across all repos (including community uploads,
+/// fine-tunes, quantized variants, etc.).
+pub async fn search_models_by_query(
+    query: &str,
+    task: Option<&str>,
+    limit: usize,
+) -> anyhow::Result<Vec<HfModelSummary>> {
+    let fetch_limit = (limit * 2).max(30);
+    let task_filter = task.map_or(String::new(), |t| format!("&pipeline_tag={t}"));
+    let url = format!(
+        "{HF_API_BASE}?search={query}{task_filter}&sort=downloads&direction=-1&limit={fetch_limit}"
+    );
+
+    let client = hf_client();
+    let resp = client
+        .get(&url)
+        .header("User-Agent", "maiia-inference-service")
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        anyhow::bail!(
+            "HuggingFace API returned {}: {}",
+            resp.status(),
+            resp.text().await.unwrap_or_default()
+        );
+    }
+
+    let all: Vec<HfModelSummary> = resp.json().await?;
+
+    // Keep only models with supported weight formats.
+    let models: Vec<HfModelSummary> = all
+        .into_iter()
+        .filter(|m| m.tags.iter().any(|t| SUPPORTED_TAGS.contains(&t.as_str())))
+        .take(limit)
+        .collect();
+
+    Ok(models)
+}
+
 /// Fetch detailed model info from HuggingFace API.
 pub async fn get_model_info(model_id: &str) -> anyhow::Result<HfModelInfo> {
     let url = format!("{HF_API_BASE}/{model_id}?blobs=true");
 
-    let client = reqwest::Client::new();
+    let client = hf_client();
     let resp = client
         .get(&url)
         .header("User-Agent", "maiia-inference-service")
@@ -455,7 +516,7 @@ pub async fn get_model_info(model_id: &str) -> anyhow::Result<HfModelInfo> {
 pub async fn find_gguf_variant(model_id: &str) -> anyhow::Result<Option<HfModelInfo>> {
     let model_name = urlencoded_model_name(model_id);
     let base_tag = format!("base_model:{model_id}");
-    let client = reqwest::Client::new();
+    let client = hf_client();
 
     // Search for GGUF conversions — these often include "GGUF" in their name
     let url =
@@ -498,7 +559,7 @@ pub async fn find_gguf_variant(model_id: &str) -> anyhow::Result<Option<HfModelI
 pub async fn find_compatible_variant(model_id: &str) -> anyhow::Result<Option<HfModelInfo>> {
     let model_name = urlencoded_model_name(model_id);
     let base_tag = format!("base_model:{model_id}");
-    let client = reqwest::Client::new();
+    let client = hf_client();
 
     // Search broadly — no tag filter so we catch ONNX, GGUF, and safetensors variants
     let url = format!("{HF_API_BASE}?search={model_name}&sort=downloads&direction=-1&limit=10",);
@@ -553,7 +614,105 @@ pub async fn find_compatible_variant(model_id: &str) -> anyhow::Result<Option<Hf
     Ok(None)
 }
 
-/// URL-encode only the slash in a model ID for search queries.
+/// Find the base safetensors model for a GGUF-only repo.
+///
+/// Many GGUF repos are derived from safetensors originals (e.g.,
+/// `cudabenchmarktest/qwen3.5-9b-qwen3.6-reasoning-distilled-GGUF` → base
+/// model with safetensors). When llama.cpp can't load the GGUF (format
+/// incompatibility), we can fall back to the original safetensors model via
+/// Candle.
+///
+/// Strategy:
+/// 1. Check the GGUF model's own `base_model:*` tags — these point to the
+///    original model the GGUF was derived from
+/// 2. Check each base model for safetensors
+/// 3. If no base_model tags, search HF by name stem for the original
+pub async fn find_safetensors_variant(model_id: &str) -> anyhow::Result<Option<HfModelInfo>> {
+    // First: check the current model itself — it might have both GGUF and safetensors
+    if let Ok(info) = get_model_info(model_id).await {
+        if info.has_safetensors() {
+            return Ok(Some(info));
+        }
+
+        // Check the model's own tags for base_model references.
+        // GGUF repos typically have tags like "base_model:Qwen/Qwen3-4B"
+        // pointing to the original safetensors model.
+        let base_model_ids: Vec<&str> = info
+            .tags
+            .iter()
+            .filter(|t| t.starts_with("base_model:"))
+            .map(|t| t.strip_prefix("base_model:").unwrap_or(t))
+            .collect();
+
+        for base_id in &base_model_ids {
+            tracing::info!(base_model = base_id, "Checking base_model tag for safetensors");
+            if let Ok(base_info) = get_model_info(base_id).await {
+                if base_info.has_safetensors() {
+                    tracing::info!(
+                        gguf_model = model_id,
+                        base_model = %base_info.id,
+                        "Found safetensors base model via base_model tag"
+                    );
+                    return Ok(Some(base_info));
+                }
+            }
+        }
+    }
+
+    // Fallback: search by model name stem.
+    // Strip common GGUF suffixes like "-GGUF", "-gguf" from the model name.
+    let model_name = model_id
+        .rsplit_once('/')
+        .map_or(model_id.to_string(), |(_, name)| name.to_string());
+    let search_name = model_name
+        .trim_end_matches("-GGUF")
+        .trim_end_matches("-gguf")
+        .trim_end_matches("_GGUF")
+        .trim_end_matches("_gguf")
+        // Also strip quant suffixes like "-Q4_K_M", "-Q8_0"
+        .split('-')
+        .take_while(|part| !part.starts_with('Q') || part.len() > 4)
+        .collect::<Vec<_>>()
+        .join("-");
+
+    let client = hf_client();
+    let url = format!(
+        "{HF_API_BASE}?search={search_name}&sort=downloads&direction=-1&limit=10",
+    );
+    let resp = client
+        .get(&url)
+        .header("User-Agent", "maiia-inference-service")
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+
+    let candidates: Vec<HfModelSummary> = resp.json().await?;
+
+    // Find the most popular model with safetensors and same task type
+    for candidate in &candidates {
+        if candidate.id == model_id {
+            continue;
+        }
+        if candidate.pipeline_tag.as_deref() != Some("text-generation") {
+            continue;
+        }
+        if let Ok(info) = get_model_info(&candidate.id).await {
+            if info.has_safetensors() {
+                tracing::info!(
+                    gguf_model = model_id,
+                    safetensors_variant = %info.id,
+                    "Found safetensors variant via name search"
+                );
+                return Ok(Some(info));
+            }
+        }
+    }
+
+    Ok(None)
+}
 fn urlencoded_model_name(model_id: &str) -> String {
     // Extract just the model name part (after the org/) for better search results
     model_id

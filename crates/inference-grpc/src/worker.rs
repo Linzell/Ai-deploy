@@ -143,19 +143,13 @@ impl WorkerService for WorkerServiceImpl {
                 request_id,
                 self.task.name()
             );
-            // Clone the Arc and try to get mutable reference
-            let mut task_clone = Arc::clone(&self.task);
-            if let Some(task) = Arc::get_mut(&mut task_clone) {
-                let unload_result = task.unload().await;
-                if !unload_result.success {
-                    warn!(
-                        "[{}] Failed to unload model: {}",
-                        request_id,
-                        unload_result.error.as_deref().unwrap_or("unknown")
-                    );
-                }
-            } else {
-                warn!("[{}] Cannot unload model - Arc is shared", request_id);
+            let unload_result = self.task.unload().await;
+            if !unload_result.success {
+                warn!(
+                    "[{}] Failed to unload model: {}",
+                    request_id,
+                    unload_result.error.as_deref().unwrap_or("unknown")
+                );
             }
         }
 
@@ -275,19 +269,13 @@ impl WorkerService for WorkerServiceImpl {
                 request_id,
                 self.task.name()
             );
-            // Clone the Arc and try to get mutable reference
-            let mut task_clone = Arc::clone(&self.task);
-            if let Some(task) = Arc::get_mut(&mut task_clone) {
-                let unload_result = task.unload().await;
-                if !unload_result.success {
-                    warn!(
-                        "[{}] Failed to unload model: {}",
-                        request_id,
-                        unload_result.error.as_deref().unwrap_or("unknown")
-                    );
-                }
-            } else {
-                warn!("[{}] Cannot unload model - Arc is shared", request_id);
+            let unload_result = self.task.unload().await;
+            if !unload_result.success {
+                warn!(
+                    "[{}] Failed to unload model: {}",
+                    request_id,
+                    unload_result.error.as_deref().unwrap_or("unknown")
+                );
             }
         }
 
@@ -297,9 +285,25 @@ impl WorkerService for WorkerServiceImpl {
         let rid = request_id.clone();
         let rid_for_log = request_id.clone();
         let stream_task_name = task_name.clone();
+        let request_timeout = self.request_timeout;
 
         let stream = async_stream::stream! {
-             let mut task_stream = task.execute_stream(payload, rid).await;
+            let task_stream_fut = task.execute_stream(payload, rid);
+            let mut task_stream = if request_timeout.is_zero() {
+                task_stream_fut.await
+            } else {
+                match tokio::time::timeout(request_timeout, task_stream_fut).await {
+                    Ok(stream) => stream,
+                    Err(_elapsed) => {
+                        let timeout_ms = request_timeout.as_millis();
+                        warn!("[{}] StreamTask timed out after {}ms", rid_for_log, timeout_ms);
+                        yield Err(Status::deadline_exceeded(format!(
+                            "StreamTask timed out after {timeout_ms}ms"
+                        )));
+                        return;
+                    }
+                }
+            };
 
             while let Some(chunk) = task_stream.next().await {
                 yield Ok(ProtoTaskChunk {

@@ -2,6 +2,8 @@
 # Docker Compose for Maiia AI Inference Service
 # ============================================================================
 #
+# Default features include: candle, llama, http, grpc
+#
 # Usage:
 #   docker compose up                              # Start echo task (default)
 #   docker compose up -d                           # Start in background
@@ -13,7 +15,7 @@
 # Run from a TOML preset:
 #   CONFIG=configs/foundation/bge-m3.toml docker compose up
 #
-# Build with optional backends:
+# Build with specific features:
 #   FEATURES=candle docker compose up --build
 #   FEATURES=llama docker compose up --build
 #   FEATURES="candle,llama" docker compose up --build
@@ -32,13 +34,16 @@ services:
         - FEATURES=${FEATURES:-}
     ports:
       - "50051:50051"  # gRPC
+      - "8080:8080"    # HTTP (OpenAI-compatible API)
     environment:
-      - RUST_LOG=${RUST_LOG:-info}
+      # RUST_LOG is intentionally not set — the binary has sensible per-crate defaults.
+      # Override with: RUST_LOG=info docker compose up
       # S3/MinIO configuration (optional)
-      - AWS_ENDPOINT_URL=http://minio:9000
-      - AWS_ACCESS_KEY_ID=minioadmin
-      - AWS_SECRET_ACCESS_KEY=minioadmin
-      - AWS_REGION=us-east-1
+      # Credentials should be provided via .env file or Docker secrets
+      - AWS_ENDPOINT_URL=${AWS_ENDPOINT_URL:-http://minio:9000}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
     # Default: run echo task. Override with MODEL or CONFIG env vars.
     # Examples:
     #   MODEL=Xenova/bge-m3 docker compose up
@@ -78,8 +83,8 @@ services:
       - "9000:9000"   # S3 API
       - "9001:9001"   # Web console
     environment:
-      - MINIO_ROOT_USER=minioadmin
-      - MINIO_ROOT_PASSWORD=minioadmin
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin}
     command: server /data --console-address ":9001"
     volumes:
       - minio-data:/data
@@ -97,9 +102,12 @@ services:
     depends_on:
       minio:
         condition: service_healthy
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin}
     entrypoint: >
       /bin/sh -c "
-      mc alias set local http://minio:9000 minioadmin minioadmin;
+      mc alias set local http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD};
       mc mb local/models --ignore-existing;
       mc mb local/data --ignore-existing;
       echo 'Buckets initialized';

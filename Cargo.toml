@@ -76,7 +76,7 @@ tonic-prost-build = "0.14"
 hf-hub = { version = "0.5", features = ["tokio"] }
 
 # AWS S3
-aws-sdk-s3 = "1.124"
+aws-sdk-s3 = "1.131"
 aws-config = { version = "1.8", features = ["behavior-version-latest"] }
 
 # ML (Candle)

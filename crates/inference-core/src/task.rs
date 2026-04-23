@@ -236,7 +236,7 @@ pub trait Task: Send + Sync {
     /// # Returns
     ///
     /// TaskResult indicating success or failure of unload operation
-    async fn unload(&mut self) -> TaskResult {
+    async fn unload(&self) -> TaskResult {
         TaskResult::ok("Model unloaded successfully".to_string())
     }
 

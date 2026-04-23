@@ -18,13 +18,14 @@ mod models;
 mod preprocess;
 
 use axum::{
-    extract::Request,
+    extract::{DefaultBodyLimit, Request},
+    http::{header, Method},
     routing::{get, post},
     Router,
 };
 use tower::limit::ConcurrencyLimitLayer;
 use tower_http::{
-    cors::{Any, CorsLayer},
+    cors::{AllowOrigin, CorsLayer},
     trace::TraceLayer,
 };
 use tracing::info;
@@ -62,11 +63,30 @@ impl HttpServer {
 
     /// Build the router with state.
     fn build_router_with_state(&self, state: AppState) -> Router {
-        // CORS middleware
-        let cors = CorsLayer::new()
-            .allow_methods(Any)
-            .allow_headers(Any)
-            .allow_origin(Any);
+        // CORS middleware — restrictive by default.
+        // Allow specific origins via MAIIA_AI_CORS_ORIGINS (comma-separated).
+        // Non-browser clients (curl, grpcurl, etc.) are not affected by CORS.
+        let allowed_origins: Vec<_> = std::env::var("MAIIA_AI_CORS_ORIGINS")
+            .ok()
+            .into_iter()
+            .flat_map(|s| {
+                s.split(',')
+                    .filter_map(|o| o.trim().parse::<axum::http::HeaderValue>().ok())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        let cors = if allowed_origins.is_empty() {
+            CorsLayer::new()
+                .allow_methods([Method::GET, Method::POST])
+                .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
+        } else {
+            info!("CORS allowed origins: {:?}", allowed_origins);
+            CorsLayer::new()
+                .allow_methods([Method::GET, Method::POST])
+                .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
+                .allow_origin(AllowOrigin::list(allowed_origins))
+        };
 
         // Request tracing
         let trace = TraceLayer::new_for_http().make_span_with(|request: &Request<_>| {
@@ -91,6 +111,12 @@ impl HttpServer {
             ConcurrencyLimitLayer::new(usize::MAX)
         };
 
+        let body_limit = DefaultBodyLimit::max(self.config.max_payload_size_bytes);
+        info!(
+            "HTTP max payload size: {} bytes",
+            self.config.max_payload_size_bytes
+        );
+
         Router::new()
             .route("/v1/models", get(list_models))
             .route("/v1/models/{model}", get(get_model))
@@ -102,6 +128,7 @@ impl HttpServer {
             .route("/status", get(model_status))
             .route("/shutdown", post(shutdown))
             .with_state(state)
+            .layer(body_limit)
             .layer(cors)
             .layer(trace)
             .layer(concurrency_layer)

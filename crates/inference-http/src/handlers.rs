@@ -2,6 +2,7 @@
 
 use axum::{
     extract::{Json, State},
+    http::HeaderMap,
     response::Json as ResponseJson,
 };
 use std::sync::{
@@ -10,7 +11,7 @@ use std::sync::{
 };
 use std::time::Instant;
 
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::preprocess::{
     postprocess_chat_completion, postprocess_completion, postprocess_embedding,
@@ -135,7 +136,7 @@ pub async fn get_model(
 /// Handle chat completion request.
 #[axum::debug_handler]
 pub async fn chat_completions(
-    mut state: State<AppState>,
+    state: State<AppState>,
     body: Json<serde_json::Value>,
 ) -> ResponseJson<serde_json::Value> {
     let body_value = body.0;
@@ -167,8 +168,7 @@ pub async fn chat_completions(
             request_id,
             state.task.name()
         );
-        let task = Arc::get_mut(&mut state.task).unwrap();
-        let unload_result = task.unload().await;
+        let unload_result = state.task.unload().await;
         if !unload_result.success {
             warn!(
                 "[{}] Failed to unload model: {}",
@@ -183,8 +183,10 @@ pub async fn chat_completions(
         info!("Model not loaded, reloading on first request");
         let reload_result = state.task.reload().await;
         if !reload_result.success {
+            let detail = reload_result.error.unwrap_or_else(|| "Unknown error".to_string());
+            error!(request_id = %request_id, error = %detail, "Model reload failed");
             return ResponseJson(serde_json::json!({
-                "error": { "message": format!("Failed to load model: {}", reload_result.error.unwrap_or_else(|| "Unknown error".to_string())), "type": "model_load_error" }
+                "error": { "message": "Internal server error", "type": "model_load_error" }
             }));
         }
     }
@@ -233,9 +235,12 @@ pub async fn chat_completions(
             success: false,
             error: Some(err),
             ..
-        } => ResponseJson(serde_json::json!({ "error": { "message": err, "type": "error" } })),
+        } => {
+            error!(request_id = %request_id, error = %err, "Task execution failed");
+            ResponseJson(serde_json::json!({ "error": { "message": "Internal server error", "type": "error" } }))
+        }
         _ => ResponseJson(
-            serde_json::json!({ "error": { "message": "Unknown error", "type": "error" } }),
+            serde_json::json!({ "error": { "message": "Internal server error", "type": "error" } }),
         ),
     }
 }
@@ -243,7 +248,7 @@ pub async fn chat_completions(
 /// Handle completion request.
 #[axum::debug_handler]
 pub async fn completions(
-    mut state: State<AppState>,
+    state: State<AppState>,
     body: Json<serde_json::Value>,
 ) -> ResponseJson<serde_json::Value> {
     let body_value = body.0;
@@ -274,8 +279,7 @@ pub async fn completions(
             request_id,
             state.task.name()
         );
-        let task = Arc::get_mut(&mut state.task).unwrap();
-        let unload_result = task.unload().await;
+        let unload_result = state.task.unload().await;
         if !unload_result.success {
             warn!(
                 "[{}] Failed to unload model: {}",
@@ -290,8 +294,10 @@ pub async fn completions(
         info!("Model not loaded, reloading on first request");
         let reload_result = state.task.reload().await;
         if !reload_result.success {
+            let detail = reload_result.error.unwrap_or_else(|| "Unknown error".to_string());
+            error!(request_id = %request_id, error = %detail, "Model reload failed");
             return ResponseJson(serde_json::json!({
-                "error": { "message": format!("Failed to load model: {}", reload_result.error.unwrap_or_else(|| "Unknown error".to_string())), "type": "model_load_error" }
+                "error": { "message": "Internal server error", "type": "model_load_error" }
             }));
         }
     }
@@ -337,9 +343,12 @@ pub async fn completions(
             success: false,
             error: Some(err),
             ..
-        } => ResponseJson(serde_json::json!({ "error": { "message": err, "type": "error" } })),
+        } => {
+            error!(request_id = %request_id, error = %err, "Task execution failed");
+            ResponseJson(serde_json::json!({ "error": { "message": "Internal server error", "type": "error" } }))
+        }
         _ => ResponseJson(
-            serde_json::json!({ "error": { "message": "Unknown error", "type": "error" } }),
+            serde_json::json!({ "error": { "message": "Internal server error", "type": "error" } }),
         ),
     }
 }
@@ -347,7 +356,7 @@ pub async fn completions(
 /// Handle embeddings request.
 #[axum::debug_handler]
 pub async fn embeddings(
-    mut state: State<AppState>,
+    state: State<AppState>,
     body: Json<serde_json::Value>,
 ) -> ResponseJson<serde_json::Value> {
     let body_value = body.0;
@@ -372,8 +381,7 @@ pub async fn embeddings(
             request_id,
             state.task.name()
         );
-        let task = Arc::get_mut(&mut state.task).unwrap();
-        let unload_result = task.unload().await;
+        let unload_result = state.task.unload().await;
         if !unload_result.success {
             warn!(
                 "[{}] Failed to unload model: {}",
@@ -388,8 +396,10 @@ pub async fn embeddings(
         info!("Model not loaded, reloading on first request");
         let reload_result = state.task.reload().await;
         if !reload_result.success {
+            let detail = reload_result.error.unwrap_or_else(|| "Unknown error".to_string());
+            error!(request_id = %request_id, error = %detail, "Model reload failed");
             return ResponseJson(serde_json::json!({
-                "error": { "message": format!("Failed to load model: {}", reload_result.error.unwrap_or_else(|| "Unknown error".to_string())), "type": "model_load_error" }
+                "error": { "message": "Internal server error", "type": "model_load_error" }
             }));
         }
     }
@@ -402,7 +412,10 @@ pub async fn embeddings(
             success: false,
             error: Some(err),
             ..
-        } => ResponseJson(serde_json::json!({ "error": { "message": err, "type": "error" } })),
+        } => {
+            error!(request_id = %request_id, error = %err, "Task execution failed");
+            ResponseJson(serde_json::json!({ "error": { "message": "Internal server error", "type": "error" } }))
+        }
         TaskResult {
             success: _,
             result: Some(result_text),
@@ -434,7 +447,7 @@ pub async fn embeddings(
             }))
         }
         TaskResult { .. } => ResponseJson(
-            serde_json::json!({ "error": { "message": "Unknown error", "type": "error" } }),
+            serde_json::json!({ "error": { "message": "Internal server error", "type": "error" } }),
         ),
     }
 }
@@ -460,27 +473,29 @@ pub async fn reload_model(state: State<AppState>) -> ResponseJson<serde_json::Va
             success: false,
             error: Some(err),
             ..
-        } => ResponseJson(serde_json::json!({
-            "id": request_id,
-            "object": "reload",
-            "status": "error",
-            "error": { "message": err, "type": "error" }
-        })),
+        } => {
+            error!(request_id = %request_id, error = %err, "Model reload failed");
+            ResponseJson(serde_json::json!({
+                "id": request_id,
+                "object": "reload",
+                "status": "error",
+                "error": { "message": "Internal server error", "type": "error" }
+            }))
+        }
         _ => ResponseJson(serde_json::json!({
             "id": request_id,
             "object": "reload",
             "status": "error",
-            "error": { "message": "Unknown error", "type": "error" }
+            "error": { "message": "Internal server error", "type": "error" }
         })),
     }
 }
 
 /// Unload model endpoint.
 #[axum::debug_handler]
-pub async fn unload_model(mut state: State<AppState>) -> ResponseJson<serde_json::Value> {
+pub async fn unload_model(state: State<AppState>) -> ResponseJson<serde_json::Value> {
     let request_id = uuid::Uuid::new_v4().to_string();
-    let task = Arc::get_mut(&mut state.task).unwrap();
-    let result = task.unload().await;
+    let result = state.task.unload().await;
 
     match result {
         TaskResult {
@@ -497,17 +512,20 @@ pub async fn unload_model(mut state: State<AppState>) -> ResponseJson<serde_json
             success: false,
             error: Some(err),
             ..
-        } => ResponseJson(serde_json::json!({
-            "id": request_id,
-            "object": "unload",
-            "status": "error",
-            "error": { "message": err, "type": "error" }
-        })),
+        } => {
+            error!(request_id = %request_id, error = %err, "Model unload failed");
+            ResponseJson(serde_json::json!({
+                "id": request_id,
+                "object": "unload",
+                "status": "error",
+                "error": { "message": "Internal server error", "type": "error" }
+            }))
+        }
         _ => ResponseJson(serde_json::json!({
             "id": request_id,
             "object": "unload",
             "status": "error",
-            "error": { "message": "Unknown error", "type": "error" }
+            "error": { "message": "Internal server error", "type": "error" }
         })),
     }
 }
@@ -527,9 +545,39 @@ pub async fn model_status(state: State<AppState>) -> ResponseJson<serde_json::Va
     }))
 }
 
-/// Request shutdown of the HTTP server
-pub async fn shutdown(State(state): State<AppState>) -> ResponseJson<serde_json::Value> {
-    info!("Shutdown requested via HTTP endpoint");
+/// Request shutdown of the HTTP server.
+/// Requires a valid `Authorization: Bearer <token>` header where the token
+/// is set via the `MAIIA_AI_ADMIN_TOKEN` environment variable.
+/// If no token is configured, shutdown is disabled in production.
+pub async fn shutdown(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ResponseJson<serde_json::Value> {
+    let expected = match std::env::var("MAIIA_AI_ADMIN_TOKEN") {
+        Ok(t) if !t.is_empty() => t,
+        _ => {
+            warn!("Shutdown rejected: MAIIA_AI_ADMIN_TOKEN not configured");
+            return ResponseJson(serde_json::json!({
+                "status": "error",
+                "message": "Shutdown endpoint is disabled. Set MAIIA_AI_ADMIN_TOKEN to enable."
+            }));
+        }
+    };
+
+    let provided = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+
+    if provided != Some(&expected) {
+        warn!("Shutdown rejected: invalid or missing admin token");
+        return ResponseJson(serde_json::json!({
+            "status": "error",
+            "message": "Unauthorized"
+        }));
+    }
+
+    info!("Shutdown requested via HTTP endpoint (authenticated)");
     state.shutdown_requested.store(true, Ordering::SeqCst);
     ResponseJson(serde_json::json!({
         "status": "ok",

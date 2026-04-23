@@ -80,7 +80,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, trace};
 
 #[cfg(feature = "preprocess")]
 use inference_preprocess::Preprocessor;
@@ -416,11 +416,8 @@ impl OnnxTask {
         &self,
         payload: &str,
     ) -> Result<(HashMap<String, serde_json::Value>, PreprocessContextData), TaskError> {
-        debug!(
-            payload_len = payload.len(),
-            payload_preview = &payload[..payload.len().min(200)],
-            "preprocess_or_passthrough received payload"
-        );
+        // Use trace level for payload content to avoid leaking PII/API keys into logs.
+        trace!(payload_len = payload.len(), "preprocess_or_passthrough received payload");
 
         // First, try to parse as OnnxInput to check for direct tensor format
         if let Ok(direct_input) = serde_json::from_str::<OnnxInput>(payload) {

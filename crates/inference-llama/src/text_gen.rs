@@ -114,10 +114,17 @@ enum LlamaRequest {
     },
 }
 
+/// Signal from worker thread indicating model load result.
+enum WorkerReady {
+    Ok { vocab_size: i32, n_ctx_train: u32 },
+    Failed(String),
+}
+
 /// Internal worker that owns all llama.cpp resources on a single thread.
 /// This avoids all Send/Sync issues by keeping everything on one thread.
 struct LlamaWorker {
     request_rx: std::sync::mpsc::Receiver<LlamaRequest>,
+    ready_tx: std::sync::mpsc::Sender<WorkerReady>,
     gguf_path: PathBuf,
     gen_config: LlamaGenConfig,
 }
@@ -135,6 +142,13 @@ fn cache_dtype_to_llama(dtype: CacheDType) -> llama_cpp_2::context::params::KvCa
         CacheDType::BF16 => KvCacheType::BF16,
         CacheDType::Q8_0 => KvCacheType::Q8_0,
         CacheDType::Q4_0 => KvCacheType::Q4_0,
+        CacheDType::Q4_K => KvCacheType::Q4_K,
+        CacheDType::Q5_K => KvCacheType::Q5_K,
+        CacheDType::Q6_K => KvCacheType::Q6_K,
+        CacheDType::Q8_K => KvCacheType::Q8_K,
+        CacheDType::TQ1_0 => KvCacheType::TQ1_0,
+        CacheDType::TQ2_0 => KvCacheType::TQ2_0,
+        CacheDType::MXFP4 => KvCacheType::MXFP4,
     }
 }
 
@@ -150,10 +164,22 @@ impl LlamaWorker {
         let backend = match LlamaBackend::init() {
             Ok(b) => b,
             Err(e) => {
-                tracing::error!("Failed to initialize llama.cpp backend: {e}");
+                let msg = format!("Failed to initialize llama.cpp backend: {e}");
+                tracing::error!("{msg}");
+                let _ = self.ready_tx.send(WorkerReady::Failed(msg));
                 return;
             }
         };
+
+        // Route llama.cpp native C/C++ logs through Rust's tracing system instead
+        // of stderr. This lets our EnvFilter control the level:
+        // - At WARN (default): only llama.cpp errors/warnings appear (no spam)
+        // - At DEBUG/INFO: full model loading details visible for debugging
+        // This is critical — "null result from llama cpp" gives no context, but
+        // the native logs explain WHY (OOM, incompatible arch, missing tensors, etc.)
+        llama_cpp_2::send_logs_to_tracing(
+            llama_cpp_2::LogOptions::default().with_logs_enabled(true),
+        );
 
         // Set up model parameters
         let model_params =
@@ -163,16 +189,37 @@ impl LlamaWorker {
         let model = match LlamaModel::load_from_file(&backend, &self.gguf_path, &model_params) {
             Ok(m) => m,
             Err(e) => {
-                tracing::error!("Failed to load GGUF model: {e}");
+                // The llama-cpp-2 error is often "null result from llama cpp" which is
+                // unhelpful. The real error was already logged by llama.cpp's native
+                // logger (routed through tracing above), e.g.:
+                //   "key qwen35.rope.dimension_sections has wrong array length; expected 4, got 3"
+                //   "model is too large for available memory"
+                // We hint the user to check the logs above and suggest alternatives.
+                let msg = format!(
+                    "Failed to load GGUF model: {e}. \
+                     The detailed error from llama.cpp should appear in the logs above. \
+                     Common causes: \
+                     (1) model format not supported by this llama.cpp version — try the Candle backend instead (--backend candle); \
+                     (2) insufficient GPU/CPU memory — try --n-gpu-layers 0 or a smaller model; \
+                     (3) corrupted GGUF file — re-download or try a different quantization."
+                );
+                tracing::error!("{msg}");
+                let _ = self.ready_tx.send(WorkerReady::Failed(msg));
                 return;
             }
         };
 
+        let vocab_size = model.n_vocab();
+        let n_ctx_train = model.n_ctx_train();
+
         info!(
-            vocab_size = model.n_vocab(),
-            n_ctx_train = model.n_ctx_train(),
+            vocab_size = vocab_size,
+            n_ctx_train = n_ctx_train,
             "Model loaded successfully in worker thread"
         );
+
+        // Signal that the model is ready
+        let _ = self.ready_tx.send(WorkerReady::Ok { vocab_size, n_ctx_train });
 
         // Set up context parameters with KV cache configuration
         //
@@ -219,7 +266,9 @@ impl LlamaWorker {
         let mut ctx = match model.new_context(&backend, ctx_params) {
             Ok(c) => c,
             Err(e) => {
-                tracing::error!("Failed to create context: {e}");
+                let msg = format!("Failed to create context: {e}");
+                tracing::error!("{msg}");
+                let _ = self.ready_tx.send(WorkerReady::Failed(msg));
                 return;
             }
         };
@@ -590,10 +639,12 @@ impl LlamaTextGenTask {
 
         // Create channel for communication with worker
         let (request_tx, request_rx) = std::sync::mpsc::channel();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
 
         // Create worker
         let worker = LlamaWorker {
             request_rx,
+            ready_tx,
             gguf_path: gguf_path.clone(),
             gen_config: gen_config.clone(),
         };
@@ -606,9 +657,26 @@ impl LlamaTextGenTask {
             })
             .map_err(|e| TaskError::ModelLoad(format!("Failed to spawn worker thread: {e}")))?;
 
-        // Give the worker a moment to start and load the model
-        // In production, you'd want a proper ready signal
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        // Wait for the worker to signal that the model is loaded (or failed).
+        // This blocks the calling thread (typically during eager startup) but
+        // ensures we don't report "model loaded" until it's actually true.
+        match ready_rx.recv() {
+            Ok(WorkerReady::Ok { vocab_size, n_ctx_train }) => {
+                info!(
+                    vocab_size = vocab_size,
+                    n_ctx_train = n_ctx_train,
+                    "Model loaded and ready"
+                );
+            }
+            Ok(WorkerReady::Failed(msg)) => {
+                return Err(TaskError::ModelLoad(msg));
+            }
+            Err(_) => {
+                return Err(TaskError::ModelLoad(
+                    "Worker thread disconnected before model was loaded".to_string(),
+                ));
+            }
+        }
 
         Ok(Self {
             name,
