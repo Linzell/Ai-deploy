@@ -9,6 +9,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  RUST_VERSION: "1.94.0"
 
 jobs:
   # ===========================================================================
@@ -19,13 +20,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.94.0
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_VERSION }}
           components: rustfmt
       - run: cargo fmt --all -- --check
 
   # ===========================================================================
-  # Job 2: Clippy lints (default features = candle, llama, http, grpc)
+  # Job 2: Clippy lints
   # ===========================================================================
   clippy:
     name: Clippy
@@ -33,19 +35,20 @@ jobs:
     needs: fmt
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.94.0
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_VERSION }}
           components: clippy
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: Swatinem/rust-cache@v2
-      # Run clippy with default features (candle, llama, http, grpc)
+      # Default features (candle, llama, http, grpc)
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      # Run clippy with CUDA features enabled (catches cuda-gated code)
+      # CUDA features (catches cuda-gated code)
       - run: cargo clippy --workspace --all-targets --features "http,grpc,candle,llama,cuda" -- -D warnings
 
   # ===========================================================================
-  # Job 3: Build check (cargo check with all feature combos)
+  # Job 3: Build check
   # ===========================================================================
   check:
     name: Check
@@ -53,13 +56,13 @@ jobs:
     needs: fmt
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.94.0
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: Swatinem/rust-cache@v2
-      # Default features
       - run: cargo check --workspace --all-targets
-      # CUDA features
       - run: cargo check --workspace --all-targets --features "http,grpc,candle,llama,cuda"
 
   # ===========================================================================
@@ -71,7 +74,9 @@ jobs:
     needs: [check, clippy]
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.94.0
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: Swatinem/rust-cache@v2
@@ -80,7 +85,7 @@ jobs:
         run: cargo test -p inference-core test_all_config_files_parse_and_validate -- --nocapture
 
   # ===========================================================================
-  # Job 5: Security audit (cargo audit)
+  # Job 5: Security audit
   # ===========================================================================
   security:
     name: Security Audit
@@ -88,7 +93,9 @@ jobs:
     needs: test
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.94.0
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-audit
         run: cargo install cargo-audit
@@ -104,11 +111,9 @@ jobs:
     needs: [security, test]
     steps:
       - uses: actions/checkout@v4
-      - name: Build Docker image (default features)
+      - name: Build Docker image
         run: docker build -t inference-service:ci-test .
       - name: Verify binary runs --help
-        run: |
-          docker run --rm inference-service:ci-test --help
+        run: docker run --rm inference-service:ci-test --help
       - name: Verify grpc_health_probe is installed
-        run: |
-          docker run --rm --entrypoint /bin/grpc_health_probe inference-service:ci-test --version
+        run: docker run --rm --entrypoint /bin/grpc_health_probe inference-service:ci-test --version
