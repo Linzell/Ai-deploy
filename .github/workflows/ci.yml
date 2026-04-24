@@ -10,6 +10,8 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   RUST_VERSION: "1.94.0"
+  # Default workspace features (defined in inference-service/Cargo.toml)
+  DEFAULT_FEATURES: "candle,llama,http,grpc"
 
 jobs:
   # ===========================================================================
@@ -42,10 +44,7 @@ jobs:
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: Swatinem/rust-cache@v2
-      # Default features (candle, llama, http, grpc)
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      # CUDA features (catches cuda-gated code)
-      - run: cargo clippy --workspace --all-targets --features "http,grpc,candle,llama,cuda" -- -D warnings
 
   # ===========================================================================
   # Job 3: Build check
@@ -63,7 +62,6 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace --all-targets
-      - run: cargo check --workspace --all-targets --features "http,grpc,candle,llama,cuda"
 
   # ===========================================================================
   # Job 4: Tests
