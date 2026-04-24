@@ -310,7 +310,12 @@ safetensors.torch.save_file(state, dst)
     info!(src = %src.display(), dst = %dst.display(), "Converting pytorch_model.bin to safetensors via Python");
 
     let output = std::process::Command::new("python3")
-        .args(["-c", script, &src.display().to_string(), &dst.display().to_string()])
+        .args([
+            "-c",
+            script,
+            &src.display().to_string(),
+            &dst.display().to_string(),
+        ])
         .output()
         .map_err(|e| {
             TaskError::ModelLoad(format!(

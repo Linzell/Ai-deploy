@@ -209,7 +209,10 @@ impl LlamaWorker {
         );
 
         // Signal that the model is ready
-        let _ = self.ready_tx.send(WorkerReady::Ok { vocab_size, n_ctx_train });
+        let _ = self.ready_tx.send(WorkerReady::Ok {
+            vocab_size,
+            n_ctx_train,
+        });
 
         // Set up context parameters with KV cache configuration
         //
@@ -651,7 +654,10 @@ impl LlamaTextGenTask {
         // This blocks the calling thread (typically during eager startup) but
         // ensures we don't report "model loaded" until it's actually true.
         match ready_rx.recv() {
-            Ok(WorkerReady::Ok { vocab_size, n_ctx_train }) => {
+            Ok(WorkerReady::Ok {
+                vocab_size,
+                n_ctx_train,
+            }) => {
                 info!(
                     vocab_size = vocab_size,
                     n_ctx_train = n_ctx_train,

@@ -132,8 +132,8 @@ fn init_logging() {
     ]
     .join(",");
 
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(&default_filter));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&default_filter));
 
     let log_format = env::var("MAIIA_AI_LOG_FORMAT").unwrap_or_default();
     if log_format.eq_ignore_ascii_case("json") {
@@ -641,7 +641,10 @@ async fn start_server(config: Config, server_mode: ServerMode, eager: bool) -> a
     if eager {
         info!(task_name, "Task created and model loaded (eager mode)");
     } else {
-        info!(task_name, "Task created (lazy loading — model loads on first request)");
+        info!(
+            task_name,
+            "Task created (lazy loading — model loads on first request)"
+        );
     }
 
     // Start server based on runtime server_mode selection

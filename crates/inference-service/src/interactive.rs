@@ -80,7 +80,11 @@ pub fn select_essentials(theme: &ColorfulTheme) -> anyhow::Result<Option<Essenti
         (
             format!(
                 "gRPC only  (port 50051){}",
-                if grpc_available { "" } else { "  ⚠ not compiled" }
+                if grpc_available {
+                    ""
+                } else {
+                    "  ⚠ not compiled"
+                }
             ),
             ServerMode::Grpc,
             grpc_available,
@@ -88,7 +92,11 @@ pub fn select_essentials(theme: &ColorfulTheme) -> anyhow::Result<Option<Essenti
         (
             format!(
                 "HTTP only  (port 8080) {}",
-                if http_available { "" } else { " ⚠ not compiled" }
+                if http_available {
+                    ""
+                } else {
+                    " ⚠ not compiled"
+                }
             ),
             ServerMode::Http,
             http_available,
@@ -154,11 +162,9 @@ pub fn select_essentials(theme: &ColorfulTheme) -> anyhow::Result<Option<Essenti
     }
 
     // --- Device ---
-    let devices = vec![
-        ("Auto  (GPU when available, CPU fallback)", "auto"),
+    let devices = [("Auto  (GPU when available, CPU fallback)", "auto"),
         ("CPU   (no GPU)", "cpu"),
-        ("GPU   (Metal on macOS, CUDA on Linux/Win)", "gpu"),
-    ];
+        ("GPU   (Metal on macOS, CUDA on Linux/Win)", "gpu")];
     let device_labels: Vec<_> = devices.iter().map(|(l, _)| *l).collect();
     let device_idx = Select::with_theme(theme)
         .with_prompt("Select device")
@@ -171,12 +177,10 @@ pub fn select_essentials(theme: &ColorfulTheme) -> anyhow::Result<Option<Essenti
     let device = devices[device_idx].1.to_string();
 
     // --- Backend ---
-    let backends = vec![
-        ("Auto    (detect from model files)", "auto"),
+    let backends = [("Auto    (detect from model files)", "auto"),
         ("ONNX    (best for embeddings, classification)", "onnx"),
         ("Candle  (best for modern LLMs: Qwen, Llama)", "candle"),
-        ("Llama   (best for GGUF models)", "llama"),
-    ];
+        ("Llama   (best for GGUF models)", "llama")];
     let backend_labels: Vec<_> = backends.iter().map(|(l, _)| *l).collect();
     let backend_idx = Select::with_theme(theme)
         .with_prompt("Select backend")
@@ -368,7 +372,7 @@ async fn dynamic_select_model(
                         }
                     }
                 }
-                _ = tokio::time::sleep(remaining) => {
+                () = tokio::time::sleep(remaining) => {
                     // Timer expired — loop back to fire the search
                     continue;
                 }
@@ -413,28 +417,32 @@ fn handle_key(
             filter.push(c);
             *selected = 0;
             *last_typing = Some(Instant::now());
-            *rendered_lines = render_model_list(term, task, models, *selected, filter, *rendered_lines);
+            *rendered_lines =
+                render_model_list(term, task, models, *selected, filter, *rendered_lines);
             Ok(None)
         }
         Key::Backspace => {
             if filter.pop().is_some() {
                 *selected = 0;
                 *last_typing = Some(Instant::now());
-                *rendered_lines = render_model_list(term, task, models, *selected, filter, *rendered_lines);
+                *rendered_lines =
+                    render_model_list(term, task, models, *selected, filter, *rendered_lines);
             }
             Ok(None)
         }
         Key::ArrowUp => {
             if *selected > 0 {
                 *selected -= 1;
-                *rendered_lines = render_model_list(term, task, models, *selected, filter, *rendered_lines);
+                *rendered_lines =
+                    render_model_list(term, task, models, *selected, filter, *rendered_lines);
             }
             Ok(None)
         }
         Key::ArrowDown => {
             if *selected + 1 < models.len() {
                 *selected += 1;
-                *rendered_lines = render_model_list(term, task, models, *selected, filter, *rendered_lines);
+                *rendered_lines =
+                    render_model_list(term, task, models, *selected, filter, *rendered_lines);
             }
             Ok(None)
         }

@@ -492,9 +492,13 @@ impl CandleTextGenTask {
 
         // Generation loop
         let model_guard = self.model.read().await;
-        let mut model = model_guard.as_ref().ok_or_else(|| {
-            TaskError::ModelNotFound("Model not loaded. Call reload() first.".into())
-        })?.lock().await;
+        let mut model = model_guard
+            .as_ref()
+            .ok_or_else(|| {
+                TaskError::ModelNotFound("Model not loaded. Call reload() first.".into())
+            })?
+            .lock()
+            .await;
         model
             .clear_kv_cache(&self.device, self.dtype)
             .map_err(|e| TaskError::Inference(format!("Failed to clear KV cache: {e}")))?;

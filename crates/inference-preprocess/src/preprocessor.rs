@@ -77,9 +77,10 @@ fn sanitize_local_path(path: &str) -> PreprocessResult<std::path::PathBuf> {
         PreprocessError::FileLoad(format!("Failed to determine working directory: {e}"))
     })?;
 
-    let target = base.join(path).canonicalize().map_err(|e| {
-        PreprocessError::FileLoad(format!("Invalid or inaccessible path: {e}"))
-    })?;
+    let target = base
+        .join(path)
+        .canonicalize()
+        .map_err(|e| PreprocessError::FileLoad(format!("Invalid or inaccessible path: {e}")))?;
 
     if !target.starts_with(&base) {
         return Err(PreprocessError::InvalidInput(

@@ -417,7 +417,10 @@ impl OnnxTask {
         payload: &str,
     ) -> Result<(HashMap<String, serde_json::Value>, PreprocessContextData), TaskError> {
         // Use trace level for payload content to avoid leaking PII/API keys into logs.
-        trace!(payload_len = payload.len(), "preprocess_or_passthrough received payload");
+        trace!(
+            payload_len = payload.len(),
+            "preprocess_or_passthrough received payload"
+        );
 
         // First, try to parse as OnnxInput to check for direct tensor format
         if let Ok(direct_input) = serde_json::from_str::<OnnxInput>(payload) {

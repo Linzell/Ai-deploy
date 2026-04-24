@@ -183,7 +183,9 @@ pub async fn chat_completions(
         info!("Model not loaded, reloading on first request");
         let reload_result = state.task.reload().await;
         if !reload_result.success {
-            let detail = reload_result.error.unwrap_or_else(|| "Unknown error".to_string());
+            let detail = reload_result
+                .error
+                .unwrap_or_else(|| "Unknown error".to_string());
             error!(request_id = %request_id, error = %detail, "Model reload failed");
             return ResponseJson(serde_json::json!({
                 "error": { "message": "Internal server error", "type": "model_load_error" }
@@ -237,7 +239,9 @@ pub async fn chat_completions(
             ..
         } => {
             error!(request_id = %request_id, error = %err, "Task execution failed");
-            ResponseJson(serde_json::json!({ "error": { "message": "Internal server error", "type": "error" } }))
+            ResponseJson(
+                serde_json::json!({ "error": { "message": "Internal server error", "type": "error" } }),
+            )
         }
         _ => ResponseJson(
             serde_json::json!({ "error": { "message": "Internal server error", "type": "error" } }),
@@ -294,7 +298,9 @@ pub async fn completions(
         info!("Model not loaded, reloading on first request");
         let reload_result = state.task.reload().await;
         if !reload_result.success {
-            let detail = reload_result.error.unwrap_or_else(|| "Unknown error".to_string());
+            let detail = reload_result
+                .error
+                .unwrap_or_else(|| "Unknown error".to_string());
             error!(request_id = %request_id, error = %detail, "Model reload failed");
             return ResponseJson(serde_json::json!({
                 "error": { "message": "Internal server error", "type": "model_load_error" }
@@ -345,7 +351,9 @@ pub async fn completions(
             ..
         } => {
             error!(request_id = %request_id, error = %err, "Task execution failed");
-            ResponseJson(serde_json::json!({ "error": { "message": "Internal server error", "type": "error" } }))
+            ResponseJson(
+                serde_json::json!({ "error": { "message": "Internal server error", "type": "error" } }),
+            )
         }
         _ => ResponseJson(
             serde_json::json!({ "error": { "message": "Internal server error", "type": "error" } }),
@@ -396,7 +404,9 @@ pub async fn embeddings(
         info!("Model not loaded, reloading on first request");
         let reload_result = state.task.reload().await;
         if !reload_result.success {
-            let detail = reload_result.error.unwrap_or_else(|| "Unknown error".to_string());
+            let detail = reload_result
+                .error
+                .unwrap_or_else(|| "Unknown error".to_string());
             error!(request_id = %request_id, error = %detail, "Model reload failed");
             return ResponseJson(serde_json::json!({
                 "error": { "message": "Internal server error", "type": "model_load_error" }
@@ -414,7 +424,9 @@ pub async fn embeddings(
             ..
         } => {
             error!(request_id = %request_id, error = %err, "Task execution failed");
-            ResponseJson(serde_json::json!({ "error": { "message": "Internal server error", "type": "error" } }))
+            ResponseJson(
+                serde_json::json!({ "error": { "message": "Internal server error", "type": "error" } }),
+            )
         }
         TaskResult {
             success: _,
