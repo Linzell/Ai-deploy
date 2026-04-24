@@ -377,9 +377,8 @@ impl LlamaWorker {
         // Generation loop
         let decode_start = std::time::Instant::now();
         let mut generated_tokens = Vec::new();
-        let mut n_cur = batch.n_tokens();
 
-        for _step in 0..gen_config.max_new_tokens {
+        for (n_cur, _step) in (batch.n_tokens()..).zip(0..gen_config.max_new_tokens) {
             // Bail out if we've reached the context limit
             if n_cur as usize >= n_ctx {
                 info!(n_cur = n_cur, n_ctx = n_ctx, "Reached context limit");
@@ -405,8 +404,6 @@ impl LlamaWorker {
             batch
                 .add(new_token, n_cur, &[0], true)
                 .map_err(|e| TaskError::Inference(format!("Failed to add token: {e}")))?;
-
-            n_cur += 1;
 
             // Decode
             ctx.decode(&mut batch)
@@ -521,9 +518,8 @@ impl LlamaWorker {
         // Generation loop with streaming
         let mut generated_text = String::new();
         let mut num_tokens = 0;
-        let mut n_cur = batch.n_tokens();
 
-        for _step in 0..gen_config.max_new_tokens {
+        for (n_cur, _step) in (batch.n_tokens()..).zip(0..gen_config.max_new_tokens) {
             // Bail out if we've reached the context limit
             if n_cur as usize >= n_ctx {
                 break;
@@ -566,8 +562,6 @@ impl LlamaWorker {
             if batch.add(new_token, n_cur, &[0], true).is_err() {
                 break;
             }
-
-            n_cur += 1;
 
             // Decode
             if ctx.decode(&mut batch).is_err() {
