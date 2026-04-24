@@ -520,7 +520,7 @@ pub async fn find_gguf_variant(model_id: &str) -> anyhow::Result<Option<HfModelI
 
     // Search for GGUF conversions — these often include "GGUF" in their name
     let url =
-        format!("{HF_API_BASE}?search={model_name}+GGUF&sort=downloads&direction=-1&limit=10",);
+        format!("{HF_API_BASE}?search={model_name}+GGUF&sort=downloads&direction=-1&limit=10");
 
     let resp = client
         .get(&url)
@@ -562,7 +562,7 @@ pub async fn find_compatible_variant(model_id: &str) -> anyhow::Result<Option<Hf
     let client = hf_client();
 
     // Search broadly — no tag filter so we catch ONNX, GGUF, and safetensors variants
-    let url = format!("{HF_API_BASE}?search={model_name}&sort=downloads&direction=-1&limit=10",);
+    let url = format!("{HF_API_BASE}?search={model_name}&sort=downloads&direction=-1&limit=10");
 
     let resp = client
         .get(&url)
