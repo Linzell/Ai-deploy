@@ -162,9 +162,11 @@ pub fn select_essentials(theme: &ColorfulTheme) -> anyhow::Result<Option<Essenti
     }
 
     // --- Device ---
-    let devices = [("Auto  (GPU when available, CPU fallback)", "auto"),
+    let devices = [
+        ("Auto  (GPU when available, CPU fallback)", "auto"),
         ("CPU   (no GPU)", "cpu"),
-        ("GPU   (Metal on macOS, CUDA on Linux/Win)", "gpu")];
+        ("GPU   (Metal on macOS, CUDA on Linux/Win)", "gpu"),
+    ];
     let device_labels: Vec<_> = devices.iter().map(|(l, _)| *l).collect();
     let device_idx = Select::with_theme(theme)
         .with_prompt("Select device")
@@ -177,10 +179,12 @@ pub fn select_essentials(theme: &ColorfulTheme) -> anyhow::Result<Option<Essenti
     let device = devices[device_idx].1.to_string();
 
     // --- Backend ---
-    let backends = [("Auto    (detect from model files)", "auto"),
+    let backends = [
+        ("Auto    (detect from model files)", "auto"),
         ("ONNX    (best for embeddings, classification)", "onnx"),
         ("Candle  (best for modern LLMs: Qwen, Llama)", "candle"),
-        ("Llama   (best for GGUF models)", "llama")];
+        ("Llama   (best for GGUF models)", "llama"),
+    ];
     let backend_labels: Vec<_> = backends.iter().map(|(l, _)| *l).collect();
     let backend_idx = Select::with_theme(theme)
         .with_prompt("Select backend")
@@ -314,11 +318,7 @@ async fn dynamic_select_model(
     // Spawn a blocking thread that reads keys and forwards them.
     std::thread::spawn(move || {
         let term = Term::stdout();
-        loop {
-            let key = match term.read_key() {
-                Ok(k) => k,
-                Err(_) => break,
-            };
+        while let Ok(key) = term.read_key() {
             if tx.blocking_send(key).is_err() {
                 break;
             }
@@ -356,7 +356,7 @@ async fn dynamic_select_model(
                 key = rx.recv() => {
                     if let Some(key) = key {
                         if let Some(result) = handle_key(
-                            key,
+                            &key,
                             &mut filter,
                             &mut selected,
                             &mut models,
@@ -374,7 +374,6 @@ async fn dynamic_select_model(
                 }
                 () = tokio::time::sleep(remaining) => {
                     // Timer expired — loop back to fire the search
-                    continue;
                 }
             }
         } else {
@@ -383,7 +382,7 @@ async fn dynamic_select_model(
                 return Ok(None);
             };
             if let Some(result) = handle_key(
-                key,
+                &key,
                 &mut filter,
                 &mut selected,
                 &mut models,
@@ -402,11 +401,12 @@ async fn dynamic_select_model(
 }
 
 /// Handle a key press. Returns `Some(model_id)` if the user selected a model.
+#[allow(clippy::too_many_arguments)]
 fn handle_key(
-    key: Key,
+    key: &Key,
     filter: &mut String,
     selected: &mut usize,
-    models: &mut Vec<HfModelSummary>,
+    models: &mut [HfModelSummary],
     rendered_lines: &mut usize,
     last_typing: &mut Option<Instant>,
     task: &str,
@@ -414,7 +414,7 @@ fn handle_key(
 ) -> anyhow::Result<Option<String>> {
     match key {
         Key::Char(c) => {
-            filter.push(c);
+            filter.push(*c);
             *selected = 0;
             *last_typing = Some(Instant::now());
             *rendered_lines =

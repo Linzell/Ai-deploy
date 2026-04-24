@@ -145,7 +145,7 @@ impl TaskRegistry {
     /// 1. Initially has no model loaded (is_ready() returns false)
     /// 2. On first execute() call, loads the model and then executes
     /// 3. Supports reload() and unload() methods
-    pub async fn create_lazy(config: &Config) -> TaskResult<Box<dyn Task>> {
+    pub fn create_lazy(config: &Config) -> TaskResult<Box<dyn Task>> {
         let lazy_task = LazyTask::new(config.clone());
         Ok(Box::new(LazyTaskWrapper::new(lazy_task)))
     }

@@ -628,7 +628,7 @@ async fn start_server(config: Config, server_mode: ServerMode, eager: bool) -> a
     } else {
         // Lazy: defer model loading until the first request arrives.
         // Fast startup but first request is slow.
-        match TaskRegistry::create_lazy(&config).await {
+        match TaskRegistry::create_lazy(&config) {
             Ok(t) => t,
             Err(e) => {
                 error!("Failed to create task: {}", e);
