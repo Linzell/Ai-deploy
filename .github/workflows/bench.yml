@@ -12,6 +12,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  RUST_VERSION: "1.94.0"
 
 jobs:
   bench:
@@ -19,34 +20,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
       - uses: Swatinem/rust-cache@v2
         with:
-          # Separate cache for benchmarks (release profile)
           key: bench
-
       - name: Run benchmarks
-        run: cargo bench --package inference-service -- --output-format bencher | tee bench-output.txt
-
+        run: |
+          cargo bench --package inference-service --bench inference_bench -- --output-format bencher 2>&1 \
+            | grep '^bench:' > bench-output.txt
+          echo "Benchmark results:"
+          cat bench-output.txt
       - name: Store benchmark results
         uses: benchmark-action/github-action-benchmark@v1
         with:
           name: Inference Service Benchmarks
           tool: cargo
           output-file-path: bench-output.txt
-          # Comment on PR with benchmark comparison
           comment-on-alert: true
           alert-comment-cc-users: "@Linzell"
-          # Fail if performance regresses by more than 200%
           alert-threshold: "200%"
           fail-on-alert: false
-          # Store results in gh-pages branch for historical tracking
           auto-push: false
-          # Show results as PR comment
           comment-always: true
           github-token: ${{ secrets.GITHUB_TOKEN }}
