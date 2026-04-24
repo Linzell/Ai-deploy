@@ -100,6 +100,12 @@ pub fn load_session_from_file(path: &Path, config: &Config) -> TaskResult<Sessio
 
     let mut builder = Session::builder().map_err(|e| TaskError::OnnxLoad(e.to_string()))?;
 
+    // Suppress ONNX Runtime's C++ logging (session creation, graph optimization,
+    // execution provider info, etc.). Only show warnings and errors.
+    builder = builder
+        .with_log_level(ort::logging::LogLevel::Warning)
+        .map_err(|e| TaskError::OnnxLoad(e.to_string()))?;
+
     builder = builder
         .with_optimization_level(GraphOptimizationLevel::Level3)
         .map_err(|e| TaskError::OnnxLoad(e.to_string()))?;
@@ -141,6 +147,11 @@ pub fn load_session_from_file(path: &Path, config: &Config) -> TaskResult<Sessio
 /// Returns `TaskError::OnnxLoad` if loading fails.
 pub fn load_session_from_bytes(bytes: &[u8], config: &Config) -> TaskResult<Session> {
     let mut builder = Session::builder().map_err(|e| TaskError::OnnxLoad(e.to_string()))?;
+
+    // Suppress ONNX Runtime's C++ logging
+    builder = builder
+        .with_log_level(ort::logging::LogLevel::Warning)
+        .map_err(|e| TaskError::OnnxLoad(e.to_string()))?;
 
     builder = builder
         .with_optimization_level(GraphOptimizationLevel::Level3)

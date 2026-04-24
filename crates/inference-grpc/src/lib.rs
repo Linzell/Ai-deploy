@@ -31,6 +31,7 @@
 pub mod batcher;
 pub mod generated;
 pub mod health;
+pub mod metrics;
 pub mod server;
 pub mod task;
 pub mod worker;

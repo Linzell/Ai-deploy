@@ -26,6 +26,7 @@ use crate::batcher::BatchHandle;
 use crate::generated::worker_pb::{
     worker_service_server::WorkerService, TaskChunk as ProtoTaskChunk, TaskRequest, TaskResponse,
 };
+use crate::metrics;
 use crate::task::Task;
 
 /// WorkerService implementation that routes requests to a Task.
@@ -124,15 +125,32 @@ impl WorkerService for WorkerServiceImpl {
 
         info!("[{}] ExecuteTask received: {}", request_id, task_name);
 
-        // Validate task name - return NOT_FOUND status for unknown tasks
+        // Warn on task name mismatch but still process the request.
+        // Clients may not know the exact task name; blocking them is unhelpful.
         if task_name != self.task.name() {
-            let error_msg = format!(
-                "Unknown task: '{}'. This worker handles: '{}'",
+            warn!(
+                "[{}] Task name mismatch: got '{}', this worker handles '{}'. Processing anyway.",
+                request_id,
                 task_name,
                 self.task.name()
             );
-            error!("[{}] {}", request_id, error_msg);
-            return Err(Status::not_found(error_msg));
+        }
+
+        // --- Check if should unload due to idle timeout ---
+        if self.task.should_unload() {
+            info!(
+                "[{}] Unloading model due to idle timeout for task '{}'",
+                request_id,
+                self.task.name()
+            );
+            let unload_result = self.task.unload().await;
+            if !unload_result.success {
+                warn!(
+                    "[{}] Failed to unload model: {}",
+                    request_id,
+                    unload_result.error.as_deref().unwrap_or("unknown")
+                );
+            }
         }
 
         // --- Execute task with optional timeout ---
@@ -177,9 +195,17 @@ impl WorkerService for WorkerServiceImpl {
         #[allow(clippy::cast_possible_truncation)]
         let duration_ms = start.elapsed().as_millis() as i64;
 
+        // --- OTel metrics (no-op when OTEL_ENDPOINT is not set) ---
+        let m = metrics::metrics();
+        let attrs = &[opentelemetry::KeyValue::new("task", task_name.clone())];
+        m.request_count.add(1, attrs);
+        #[allow(clippy::cast_precision_loss)]
+        m.request_duration_ms.record(duration_ms as f64, attrs);
+
         if result.success {
             info!("[{}] Task completed in {}ms", request_id, duration_ms);
         } else {
+            m.error_count.add(1, attrs);
             error!(
                 "[{}] Task failed: {}",
                 request_id,
@@ -187,12 +213,17 @@ impl WorkerService for WorkerServiceImpl {
             );
         }
 
-        Ok(Response::new(TaskResponse {
+        let mut response = Response::new(TaskResponse {
             success: result.success,
             result: result.result.unwrap_or_default(),
             error: result.error.unwrap_or_default(),
             duration_ms,
-        }))
+        });
+        // Always advertise the worker's task name so clients can discover it.
+        if let Ok(val) = self.task.name().parse() {
+            response.metadata_mut().insert("x-task-name", val);
+        }
+        Ok(response)
     }
 
     type StreamTaskStream =
@@ -221,24 +252,58 @@ impl WorkerService for WorkerServiceImpl {
 
         info!("[{}] StreamTask received: {}", request_id, task_name);
 
-        // Validate task name - return NOT_FOUND status for unknown tasks
+        // Warn on task name mismatch but still process the request.
         if task_name != self.task.name() {
-            let error_msg = format!(
-                "Unknown task: '{}'. This worker handles: '{}'",
+            warn!(
+                "[{}] Task name mismatch: got '{}', this worker handles '{}'. Processing anyway.",
+                request_id,
                 task_name,
                 self.task.name()
             );
-            error!("[{}] {}", request_id, error_msg);
-            return Err(Status::not_found(error_msg));
+        }
+
+        // Check if should unload due to idle timeout
+        if self.task.should_unload() {
+            info!(
+                "[{}] Unloading model due to idle timeout for task '{}'",
+                request_id,
+                self.task.name()
+            );
+            let unload_result = self.task.unload().await;
+            if !unload_result.success {
+                warn!(
+                    "[{}] Failed to unload model: {}",
+                    request_id,
+                    unload_result.error.as_deref().unwrap_or("unknown")
+                );
+            }
         }
 
         // Execute streaming task
         let task = Arc::clone(&self.task);
         let payload = req.payload.clone();
         let rid = request_id.clone();
+        let rid_for_log = request_id.clone();
+        let stream_task_name = task_name.clone();
+        let request_timeout = self.request_timeout;
 
         let stream = async_stream::stream! {
-            let mut task_stream = task.execute_stream(&payload, &rid).await;
+            let task_stream_fut = task.execute_stream(payload, rid);
+            let mut task_stream = if request_timeout.is_zero() {
+                task_stream_fut.await
+            } else {
+                match tokio::time::timeout(request_timeout, task_stream_fut).await {
+                    Ok(stream) => stream,
+                    Err(_elapsed) => {
+                        let timeout_ms = request_timeout.as_millis();
+                        warn!("[{}] StreamTask timed out after {}ms", rid_for_log, timeout_ms);
+                        yield Err(Status::deadline_exceeded(format!(
+                            "StreamTask timed out after {timeout_ms}ms"
+                        )));
+                        return;
+                    }
+                }
+            };
 
             while let Some(chunk) = task_stream.next().await {
                 yield Ok(ProtoTaskChunk {
@@ -249,7 +314,14 @@ impl WorkerService for WorkerServiceImpl {
             }
 
             let duration_ms = start.elapsed().as_millis();
-            info!("[{}] StreamTask completed in {}ms", rid, duration_ms);
+             info!("[{}] StreamTask completed in {}ms", rid_for_log, duration_ms);
+
+            // OTel metrics (no-op when OTEL_ENDPOINT is not set)
+            let m = metrics::metrics();
+            let attrs = &[opentelemetry::KeyValue::new("task", stream_task_name)];
+            m.request_count.add(1, attrs);
+            #[allow(clippy::cast_precision_loss)]
+            m.request_duration_ms.record(duration_ms as f64, attrs);
         };
 
         Ok(Response::new(Box::pin(stream)))

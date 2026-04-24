@@ -8,21 +8,29 @@ description = "Main entrypoint for inference service"
 workspace = true
 
 [features]
-default = []
-# Metal/CoreML support for macOS (Apple Silicon)
-
+default = ["candle", "llama", "http", "grpc"]
+# Metal GPU is auto-enabled on macOS via target-specific deps in inference-candle
+# and inference-llama — no feature flag needed for macOS users.
+# The "metal" feature below is kept for backward compatibility / explicit override.
+metal = ["candle-metal", "llama-metal"]
+# CUDA requires explicit opt-in (Linux/Windows only)
+all-cuda = ["cuda", "candle-cuda", "llama-cuda"]
 # CUDA support for Linux/Windows (NVIDIA GPU)
-cuda = ["inference-tasks/cuda"]
+cuda = ["inference-tasks/cuda", "dep:nvml-wrapper"]
 # Candle backend for text-generation (Rust-native ML)
 candle = ["inference-tasks/candle"]
-candle-metal = ["inference-tasks/candle-metal"]
-candle-cuda = ["inference-tasks/candle-cuda"]
+candle-metal = ["candle", "inference-tasks/candle-metal"]
+candle-cuda = ["candle", "inference-tasks/candle-cuda"]
 # Llama.cpp backend for GGUF models (GPT-OSS-20B, etc.)
 llama = ["inference-tasks/llama"]
-llama-metal = ["inference-tasks/llama-metal"]
-llama-cuda = ["inference-tasks/llama-cuda"]
+llama-metal = ["llama", "inference-tasks/llama-metal"]
+llama-cuda = ["llama", "inference-tasks/llama-cuda"]
 # TLS support for gRPC server
 tls = ["inference-grpc/tls"]
+# HTTP server (OpenAI-compatible endpoints)
+http = ["dep:inference-http", "dep:axum", "dep:tower", "dep:tower-http"]
+# gRPC server
+grpc = ["inference-grpc/grpc"]
 
 [[bin]]
 name = "inference-service"
@@ -44,18 +52,41 @@ async-trait.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+# OpenTelemetry (env-gated at runtime — disabled unless OTEL_ENDPOINT is set)
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+opentelemetry-otlp.workspace = true
+tracing-opentelemetry.workspace = true
+
 # Config
 serde.workspace = true
 serde_json.workspace = true
 
 # CLI
 clap = { version = "4", features = ["derive"] }
+dialoguer = { version = "0.11", features = ["fuzzy-select"] }
+console = "0.15"
 
 # HTTP client (for HuggingFace API)
 reqwest = { version = "0.12", features = ["json"] }
 
+# HTTP server (OpenAI-compatible endpoints)
+inference-http = { path = "../inference-http", optional = true }
+axum = { version = "0.8", features = ["macros", "tokio"], optional = true }
+tower = { version = "0.5", optional = true }
+tower-http = { version = "0.6", features = ["cors", "trace"], optional = true }
+
 # Error handling
 anyhow.workspace = true
+
+# .env file loading
+dotenvy.workspace = true
+
+# System metrics (process memory)
+sysinfo.workspace = true
+
+# GPU metrics (CUDA only — gated behind "cuda" feature)
+nvml-wrapper = { workspace = true, optional = true }
 
 [dev-dependencies]
 uuid = { version = "1.0", features = ["v4"] }

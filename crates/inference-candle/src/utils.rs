@@ -23,10 +23,34 @@ use crate::error::{TaskError, TaskResult};
 
 /// Resolve a device type to a Candle device.
 ///
-/// Handles platform-specific device initialization with automatic CPU fallback
-/// when the requested device feature is not enabled **or** when the GPU
-/// hardware probe fails at runtime (e.g., feature compiled in but running in
-/// a VM without GPU access).
+/// Metal is auto-enabled on macOS via target-specific dependencies (no feature flag needed).
+/// CUDA requires explicit `--features cuda` on Linux/Windows.
+///
+/// If the feature is compiled in but hardware probe fails at runtime
+/// (e.g., running in a VM), falls back to CPU with a warning.
+///
+/// # Arguments
+///
+/// * `device_type` - The requested device type from configuration
+///
+/// # Returns
+///
+/// A Candle `Device` ready for tensor operations.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use inference_core::DeviceType;
+/// use inference_candle::resolve_device;
+///
+/// let device = resolve_device(&DeviceType::Metal)?;
+/// ```
+/// Resolve a device type to a Candle device.
+///
+/// Metal is auto-enabled on macOS via target-specific dependencies (no feature flag needed).
+/// CUDA requires explicit `--features cuda` on Linux/Windows.
+///
+/// If hardware probe fails at runtime (e.g., running in a VM), falls back to CPU with a warning.
 ///
 /// # Arguments
 ///
@@ -50,7 +74,8 @@ pub fn resolve_device(device_type: &DeviceType) -> TaskResult<Device> {
     match resolved {
         DeviceType::Cpu | DeviceType::Auto => Ok(Device::Cpu),
         DeviceType::Metal => {
-            #[cfg(feature = "candle-metal")]
+            // Metal is auto-compiled on macOS via target-specific deps in Cargo.toml
+            #[cfg(target_os = "macos")]
             {
                 match Device::new_metal(0) {
                     Ok(dev) => {
@@ -63,14 +88,14 @@ pub fn resolve_device(device_type: &DeviceType) -> TaskResult<Device> {
                     }
                 }
             }
-            #[cfg(not(feature = "candle-metal"))]
+            #[cfg(not(target_os = "macos"))]
             {
-                warn!("Metal requested but candle-metal feature not enabled, falling back to CPU");
+                debug!("Metal not available (macOS only)");
                 Ok(Device::Cpu)
             }
         }
         DeviceType::Cuda => {
-            #[cfg(feature = "candle-cuda")]
+            #[cfg(all(not(target_os = "macos"), feature = "cuda"))]
             {
                 match Device::new_cuda(0) {
                     Ok(dev) => {
@@ -83,9 +108,9 @@ pub fn resolve_device(device_type: &DeviceType) -> TaskResult<Device> {
                     }
                 }
             }
-            #[cfg(not(feature = "candle-cuda"))]
+            #[cfg(not(all(not(target_os = "macos"), feature = "cuda")))]
             {
-                warn!("CUDA requested but candle-cuda feature not enabled, falling back to CPU");
+                debug!("CUDA not available (build with --features all-cuda on Linux for GPU)");
                 Ok(Device::Cpu)
             }
         }
@@ -94,6 +119,35 @@ pub fn resolve_device(device_type: &DeviceType) -> TaskResult<Device> {
             warn!("Generic GPU resolved to CPU");
             Ok(Device::Cpu)
         }
+    }
+}
+
+/// Returns `true` if GPU acceleration is compiled into this build of `inference-candle`.
+///
+/// - macOS → `true` (Metal is auto-enabled via target-specific deps)
+/// - non-macOS + `cuda` feature → `true`
+/// - Otherwise → `false`
+///
+/// Use this to decide whether the effective runtime device is truly GPU or
+/// will silently fall back to CPU.
+#[must_use]
+pub fn is_gpu_compiled() -> bool {
+    cfg!(target_os = "macos") || cfg!(feature = "cuda")
+}
+
+/// Read the model's preferred dtype from `config.json` (`torch_dtype` field).
+///
+/// Returns `None` if the file can't be read or the field is missing/unrecognized.
+pub fn read_model_dtype(config_path: &Path) -> Option<DType> {
+    let content = std::fs::read_to_string(config_path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let torch_dtype = json.get("torch_dtype")?.as_str()?;
+
+    match torch_dtype {
+        "bfloat16" => Some(DType::BF16),
+        "float16" => Some(DType::F16),
+        "float32" => Some(DType::F32),
+        _ => None,
     }
 }
 
@@ -152,8 +206,14 @@ pub fn find_weight_files(model_dir: &Path) -> TaskResult<Vec<PathBuf>> {
         return Ok(shards);
     }
 
+    // Check for PyTorch bin (legacy format — loaded via VarBuilder::from_pth)
+    let pytorch_bin = model_dir.join("pytorch_model.bin");
+    if pytorch_bin.exists() {
+        return Ok(vec![pytorch_bin]);
+    }
+
     Err(TaskError::ModelNotFound(
-        "No weight files found (safetensors or gguf)".into(),
+        "No weight files found (safetensors, gguf, or pytorch_model.bin)".into(),
     ))
 }
 
@@ -168,6 +228,113 @@ pub fn find_weight_files(model_dir: &Path) -> TaskResult<Vec<PathBuf>> {
 /// `true` if the first file has a `.gguf` extension.
 pub fn is_gguf(paths: &[PathBuf]) -> bool {
     paths.len() == 1 && paths[0].extension().is_some_and(|ext| ext == "gguf")
+}
+
+/// Check if the weight files are PyTorch bin format (legacy pickle).
+///
+/// # Arguments
+///
+/// * `paths` - Vector of weight file paths
+///
+/// # Returns
+///
+/// `true` if the first file has a `.bin` extension.
+pub fn is_pytorch_bin(paths: &[PathBuf]) -> bool {
+    paths.len() == 1 && paths[0].extension().is_some_and(|ext| ext == "bin")
+}
+
+/// Load a PyTorch `.bin` (pickle) file using candle's `VarBuilder::from_pth`.
+///
+/// This is a fallback for models that only have `pytorch_model.bin` without
+/// safetensors exports (common for older HuggingFace models).
+///
+/// # Arguments
+///
+/// * `path` - Path to the `pytorch_model.bin` file
+/// * `dtype` - Target data type for tensors
+/// * `device` - Device to load tensors onto
+///
+/// # Returns
+///
+/// A `VarBuilder` containing all tensors from the PyTorch file.
+pub fn load_pytorch_bin(
+    path: &Path,
+    dtype: DType,
+    device: &Device,
+) -> TaskResult<VarBuilder<'static>> {
+    info!(file = %path.display(), "Loading PyTorch bin file (legacy format)");
+
+    // Try zip-based PyTorch format first (newer torch.save format)
+    match VarBuilder::from_pth(path, dtype, device) {
+        Ok(vb) => return Ok(vb),
+        Err(e) => {
+            let err_str = format!("{e}");
+            if err_str.contains("EOCD") || err_str.contains("Zip") || err_str.contains("zip") {
+                info!("PyTorch file uses raw pickle format (non-zip), converting to safetensors via Python");
+            } else {
+                return Err(TaskError::ModelLoad(format!(
+                    "Failed to load PyTorch bin file {}: {e}",
+                    path.display()
+                )));
+            }
+        }
+    }
+
+    // Raw pickle format — convert to safetensors using Python
+    let safetensors_path = path.with_extension("safetensors");
+    if !safetensors_path.exists() {
+        convert_pytorch_to_safetensors(path, &safetensors_path)?;
+    }
+
+    // Load the converted safetensors file
+    load_safetensors_safe(&[safetensors_path], dtype, device)
+}
+
+/// Convert a raw-pickle PyTorch `.bin` file to safetensors format using Python.
+///
+/// Requires `torch` and `safetensors` Python packages to be installed.
+/// This is needed because candle's pickle loader only supports zip-based
+/// PyTorch files, while some older models use raw pickle protocol 2.
+fn convert_pytorch_to_safetensors(src: &Path, dst: &Path) -> TaskResult<()> {
+    // Pass paths as CLI arguments to avoid injection via string interpolation.
+    let script = r#"
+import torch, safetensors.torch, sys
+if len(sys.argv) != 3:
+    raise SystemExit("Usage: script.py <src> <dst>")
+src = sys.argv[1]
+dst = sys.argv[2]
+state = torch.load(src, map_location="cpu", weights_only=True)
+safetensors.torch.save_file(state, dst)
+"#;
+
+    info!(src = %src.display(), dst = %dst.display(), "Converting pytorch_model.bin to safetensors via Python");
+
+    let output = std::process::Command::new("python3")
+        .args([
+            "-c",
+            script,
+            &src.display().to_string(),
+            &dst.display().to_string(),
+        ])
+        .output()
+        .map_err(|e| {
+            TaskError::ModelLoad(format!(
+                "Failed to run Python for pytorch->safetensors conversion: {e}. \
+                 Install Python 3 with `pip install torch safetensors` to load legacy .bin models, \
+                 or use a model that provides safetensors weights."
+            ))
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(TaskError::ModelLoad(format!(
+            "Python pytorch->safetensors conversion failed: {stderr}. \
+             Ensure `torch` and `safetensors` are installed: pip install torch safetensors"
+        )));
+    }
+
+    info!(dst = %dst.display(), "Successfully converted to safetensors");
+    Ok(())
 }
 
 /// Load safetensors files without using memory-mapped I/O.
@@ -244,6 +411,15 @@ pub fn load_safetensors_safe(
                 })?
             };
 
+            // Normalize old-style LayerNorm naming:
+            //   LayerNorm.gamma → LayerNorm.weight
+            //   LayerNorm.beta  → LayerNorm.bias
+            // Many older HuggingFace models (bert-base-uncased, etc.) use gamma/beta
+            // but candle's layer_norm() expects weight/bias.
+            let name = name
+                .replace("LayerNorm.gamma", "LayerNorm.weight")
+                .replace("LayerNorm.beta", "LayerNorm.bias");
+
             all_tensors.insert(name, tensor);
         }
     }
@@ -286,12 +462,74 @@ fn convert_safetensors_dtype(st_dtype: safetensors::Dtype, tensor_name: &str) ->
 ///
 /// If `cache_dtype_k` and `cache_dtype_v` differ, we pick the higher precision
 /// of the two to avoid dtype mismatches during attention computation.
-pub fn resolve_compute_dtype(kv_cache: &KvCacheConfig) -> DType {
+///
+/// `weight_size_bytes`: total size of weight files on disk. Used on CPU to decide
+/// whether F16 is safe (small models) or must be promoted to F32 (large models
+/// where F16 activations overflow, producing NaN).
+pub fn resolve_compute_dtype(
+    kv_cache: &KvCacheConfig,
+    model_dtype: Option<DType>,
+    device: &Device,
+    weight_size_bytes: u64,
+) -> DType {
+    let raw = resolve_compute_dtype_raw(kv_cache, model_dtype);
+
+    if matches!(device, Device::Cpu) {
+        // BF16 matmul is not supported on CPU at all
+        if raw == DType::BF16 {
+            // Large models: BF16 → F32 (F16 would overflow activations)
+            // Small models: BF16 → F16 (saves memory, activations stay in range)
+            const LARGE_WEIGHT_THRESHOLD: u64 = 2 * 1024 * 1024 * 1024; // 2 GB
+            if weight_size_bytes > LARGE_WEIGHT_THRESHOLD {
+                warn!(
+                    weight_mb = weight_size_bytes / (1024 * 1024),
+                    "Large model on CPU: using F32 instead of BF16/F16 \
+                     (F16 causes NaN overflow in large model activations). \
+                     For faster inference, use a GGUF model with the llama backend."
+                );
+                return DType::F32;
+            }
+            info!("BF16 not supported on CPU, using F16 instead (still half the memory of F32)");
+            return DType::F16;
+        }
+
+        // F16 on CPU: safe for small models, NaN-prone for large ones
+        if raw == DType::F16 {
+            const LARGE_WEIGHT_THRESHOLD: u64 = 2 * 1024 * 1024 * 1024;
+            if weight_size_bytes > LARGE_WEIGHT_THRESHOLD {
+                warn!(
+                    weight_mb = weight_size_bytes / (1024 * 1024),
+                    "Large model on CPU: using F32 instead of F16 \
+                     (F16 causes NaN overflow in large model activations). \
+                     For faster inference, use a GGUF model with the llama backend."
+                );
+                return DType::F32;
+            }
+        }
+    }
+
+    raw
+}
+
+/// Inner dtype resolution without device constraints.
+fn resolve_compute_dtype_raw(kv_cache: &KvCacheConfig, model_dtype: Option<DType>) -> DType {
     // Determine the target from both K and V preferences.
     // If they differ, pick the higher-precision one since Candle requires
     // uniform dtype across model + KV cache.
     let target = match (&kv_cache.cache_dtype_k, &kv_cache.cache_dtype_v) {
-        (None, None) => return DType::F32,
+        (None, None) => {
+            // No explicit KV cache dtype — use model's native dtype if available,
+            // otherwise F32. This respects the model's torch_dtype from config.json
+            // (e.g., bfloat16 for Qwen2.5, Llama 3.x) instead of always upscaling to F32.
+            let dtype = model_dtype.unwrap_or(DType::F32);
+            if dtype != DType::F32 {
+                info!(
+                    dtype = ?dtype,
+                    "Using model's native dtype (from config.json torch_dtype)"
+                );
+            }
+            return dtype;
+        }
         (Some(k), None) => *k,
         (None, Some(v)) => *v,
         (Some(k), Some(v)) if k == v => *k,
@@ -311,7 +549,15 @@ pub fn resolve_compute_dtype(kv_cache: &KvCacheConfig) -> DType {
         CacheDType::F32 => DType::F32,
         CacheDType::F16 => DType::F16,
         CacheDType::BF16 => DType::BF16,
-        CacheDType::Q8_0 | CacheDType::Q4_0 => {
+        CacheDType::Q8_0
+        | CacheDType::Q4_0
+        | CacheDType::Q4_K
+        | CacheDType::Q5_K
+        | CacheDType::Q6_K
+        | CacheDType::Q8_K
+        | CacheDType::TQ1_0
+        | CacheDType::TQ2_0
+        | CacheDType::MXFP4 => {
             warn!(
                 requested = %target,
                 "Candle does not support quantized KV cache ({target}). \
@@ -326,11 +572,130 @@ pub fn resolve_compute_dtype(kv_cache: &KvCacheConfig) -> DType {
 /// Precision rank for `CacheDType` (higher = more precision).
 fn cache_dtype_precision_rank(dt: CacheDType) -> u8 {
     match dt {
-        CacheDType::Q4_0 => 0,
-        CacheDType::Q8_0 => 1,
-        CacheDType::F16 | CacheDType::BF16 => 2,
-        CacheDType::F32 => 3,
+        CacheDType::TQ1_0 => 0,
+        CacheDType::TQ2_0 => 1,
+        CacheDType::MXFP4 | CacheDType::Q4_0 | CacheDType::Q4_K => 2,
+        CacheDType::Q5_K => 3,
+        CacheDType::Q6_K => 4,
+        CacheDType::Q8_0 | CacheDType::Q8_K => 5,
+        CacheDType::F16 | CacheDType::BF16 => 6,
+        CacheDType::F32 => 7,
     }
+}
+
+/// Load a tokenizer from a model directory, trying all known formats.
+///
+/// Fallback order:
+/// 1. `tokenizer.json` — standard HuggingFace format (covers all tokenizer types)
+/// 2. `vocab.txt` — WordPiece (BERT-family models)
+/// 3. `vocab.json` + `merges.txt` — BPE (GPT-2, Qwen, etc.)
+///
+/// Tekken (`tekken.json`) is NOT handled here — Voxtral's Tekken tokenizer
+/// uses a different type and is loaded by its own code path.
+pub fn load_tokenizer(model_dir: &Path) -> TaskResult<tokenizers::Tokenizer> {
+    use tokenizers::Tokenizer;
+
+    let tokenizer_json = model_dir.join("tokenizer.json");
+    let vocab_txt = model_dir.join("vocab.txt");
+    let vocab_json = model_dir.join("vocab.json");
+    let merges_txt = model_dir.join("merges.txt");
+
+    if tokenizer_json.exists() {
+        Tokenizer::from_file(&tokenizer_json)
+            .map_err(|e| TaskError::ModelLoad(format!("Failed to load tokenizer.json: {e}")))
+    } else if vocab_txt.exists() {
+        info!("No tokenizer.json found, building WordPiece tokenizer from vocab.txt");
+        build_wordpiece_tokenizer(&vocab_txt)
+    } else if vocab_json.exists() {
+        info!("No tokenizer.json found, building BPE tokenizer from vocab.json");
+        build_bpe_tokenizer(&vocab_json, &merges_txt, model_dir)
+    } else {
+        Err(TaskError::ModelLoad(
+            "No tokenizer found: need tokenizer.json, vocab.txt, or vocab.json".into(),
+        ))
+    }
+}
+
+/// Build a BERT-compatible WordPiece tokenizer from `vocab.txt`.
+fn build_wordpiece_tokenizer(vocab_path: &Path) -> TaskResult<tokenizers::Tokenizer> {
+    use tokenizers::models::wordpiece::WordPiece;
+    use tokenizers::normalizers::bert::BertNormalizer;
+    use tokenizers::pre_tokenizers::bert::BertPreTokenizer;
+    use tokenizers::processors::bert::BertProcessing;
+    use tokenizers::{Model as TokenizerModel, Tokenizer};
+
+    let wp = WordPiece::from_file(&vocab_path.to_string_lossy())
+        .unk_token("[UNK]".to_string())
+        .continuing_subword_prefix("##".to_string())
+        .build()
+        .map_err(|e| TaskError::ModelLoad(format!("Failed to build WordPiece: {e}")))?;
+
+    let sep_id = wp.token_to_id("[SEP]").unwrap_or(102);
+    let cls_id = wp.token_to_id("[CLS]").unwrap_or(101);
+
+    let mut tokenizer = Tokenizer::new(wp);
+    tokenizer
+        .with_normalizer(Some(BertNormalizer::default()))
+        .with_pre_tokenizer(Some(BertPreTokenizer))
+        .with_post_processor(Some(BertProcessing::new(
+            ("[SEP]".to_string(), sep_id),
+            ("[CLS]".to_string(), cls_id),
+        )));
+
+    Ok(tokenizer)
+}
+
+/// Build a BPE tokenizer from `vocab.json` + optional `merges.txt`.
+///
+/// This handles GPT-2-style tokenizers (used by Qwen, GPT-2, RoBERTa, etc.)
+/// that ship only `vocab.json` and `merges.txt` without a `tokenizer.json`.
+/// Reads `tokenizer_config.json` for special token configuration if available.
+fn build_bpe_tokenizer(
+    vocab_path: &Path,
+    merges_path: &Path,
+    model_dir: &Path,
+) -> TaskResult<tokenizers::Tokenizer> {
+    use tokenizers::models::bpe::BPE;
+    use tokenizers::pre_tokenizers::byte_level::ByteLevel;
+    use tokenizers::Tokenizer;
+
+    let vocab_str = vocab_path.to_string_lossy();
+    let merges_str = merges_path.to_string_lossy();
+
+    let mut builder = BPE::from_file(&vocab_str, &merges_str);
+
+    // Read tokenizer_config.json for unk_token if available
+    let config_path = model_dir.join("tokenizer_config.json");
+    let unk_token = if config_path.exists() {
+        let content = std::fs::read_to_string(&config_path).unwrap_or_default();
+        let config: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
+        // unk_token can be a string or an object with "content" field
+        config["unk_token"]
+            .as_str()
+            .map(String::from)
+            .or_else(|| config["unk_token"]["content"].as_str().map(String::from))
+    } else {
+        None
+    };
+
+    if let Some(ref unk) = unk_token {
+        builder = builder.unk_token(unk.clone());
+    }
+
+    let bpe = builder.build().map_err(|e| {
+        TaskError::ModelLoad(format!(
+            "Failed to build BPE from vocab.json + merges.txt: {e}"
+        ))
+    })?;
+
+    let mut tokenizer = Tokenizer::new(bpe);
+    // GPT-2-style BPE uses byte-level pre-tokenization
+    tokenizer
+        .with_pre_tokenizer(Some(ByteLevel::default()))
+        .with_decoder(Some(ByteLevel::default()));
+
+    info!("Built BPE tokenizer from vocab.json + merges.txt");
+    Ok(tokenizer)
 }
 
 #[cfg(test)]
@@ -400,28 +765,96 @@ mod tests {
     #[test]
     fn test_resolve_compute_dtype_defaults_to_f32() {
         let kv = KvCacheConfig::default();
-        assert_eq!(resolve_compute_dtype(&kv), DType::F32);
+        assert_eq!(
+            resolve_compute_dtype(&kv, None, &Device::Cpu, 0),
+            DType::F32
+        );
+    }
+
+    #[test]
+    fn test_resolve_compute_dtype_uses_model_dtype() {
+        let kv = KvCacheConfig::default();
+        // BF16 model dtype gets downgraded to F16 on CPU (small model)
+        assert_eq!(
+            resolve_compute_dtype(&kv, Some(DType::BF16), &Device::Cpu, 0),
+            DType::F16
+        );
+        assert_eq!(
+            resolve_compute_dtype(&kv, Some(DType::F16), &Device::Cpu, 0),
+            DType::F16
+        );
+    }
+
+    #[test]
+    fn test_resolve_compute_dtype_large_model_forces_f32_on_cpu() {
+        let kv = KvCacheConfig::default();
+        let large = 3 * 1024 * 1024 * 1024; // 3 GB
+                                            // BF16 model + large weights on CPU → F32
+        assert_eq!(
+            resolve_compute_dtype(&kv, Some(DType::BF16), &Device::Cpu, large),
+            DType::F32
+        );
+        // F16 model + large weights on CPU → F32
+        assert_eq!(
+            resolve_compute_dtype(&kv, Some(DType::F16), &Device::Cpu, large),
+            DType::F32
+        );
+        // F32 model + large weights on CPU → F32 (already F32, no change)
+        assert_eq!(
+            resolve_compute_dtype(&kv, Some(DType::F32), &Device::Cpu, large),
+            DType::F32
+        );
+    }
+
+    #[test]
+    fn test_resolve_compute_dtype_kv_overrides_model_dtype() {
+        // Explicit KV cache dtype takes precedence over model dtype
+        let kv = KvCacheConfig::default().with_cache_dtype(CacheDType::F16);
+        assert_eq!(
+            resolve_compute_dtype(&kv, Some(DType::BF16), &Device::Cpu, 0),
+            DType::F16
+        );
     }
 
     #[test]
     fn test_resolve_compute_dtype_f16() {
         let kv = KvCacheConfig::default().with_cache_dtype(CacheDType::F16);
-        assert_eq!(resolve_compute_dtype(&kv), DType::F16);
+        assert_eq!(
+            resolve_compute_dtype(&kv, None, &Device::Cpu, 0),
+            DType::F16
+        );
     }
 
     #[test]
-    fn test_resolve_compute_dtype_bf16() {
+    fn test_resolve_compute_dtype_bf16_on_cpu_downgrades_to_f16() {
+        // Candle CPU backend doesn't support BF16 matmul (small model → F16)
         let kv = KvCacheConfig::default().with_cache_dtype(CacheDType::BF16);
-        assert_eq!(resolve_compute_dtype(&kv), DType::BF16);
+        assert_eq!(
+            resolve_compute_dtype(&kv, None, &Device::Cpu, 0),
+            DType::F16
+        );
     }
 
     #[test]
     fn test_resolve_compute_dtype_quantized_falls_back_to_f16() {
-        let kv = KvCacheConfig::default().with_cache_dtype(CacheDType::Q8_0);
-        assert_eq!(resolve_compute_dtype(&kv), DType::F16);
-
-        let kv = KvCacheConfig::default().with_cache_dtype(CacheDType::Q4_0);
-        assert_eq!(resolve_compute_dtype(&kv), DType::F16);
+        for dtype in [
+            CacheDType::Q8_0,
+            CacheDType::Q4_0,
+            CacheDType::Q4_K,
+            CacheDType::Q5_K,
+            CacheDType::Q6_K,
+            CacheDType::Q8_K,
+            CacheDType::TQ1_0,
+            CacheDType::TQ2_0,
+            CacheDType::MXFP4,
+        ] {
+            let kv = KvCacheConfig::default().with_cache_dtype(dtype);
+            assert_eq!(
+                resolve_compute_dtype(&kv, None, &Device::Cpu, 0),
+                DType::F16,
+                "{dtype} should fall back to F16 in Candle"
+            );
+        }
     }
 
     #[test]
@@ -430,23 +863,35 @@ mod tests {
         let kv = KvCacheConfig::default()
             .with_cache_dtype_k(CacheDType::F32)
             .with_cache_dtype_v(CacheDType::F16);
-        assert_eq!(resolve_compute_dtype(&kv), DType::F32);
+        assert_eq!(
+            resolve_compute_dtype(&kv, None, &Device::Cpu, 0),
+            DType::F32
+        );
 
         // K=F16, V=F32 -> should also pick F32
         let kv = KvCacheConfig::default()
             .with_cache_dtype_k(CacheDType::F16)
             .with_cache_dtype_v(CacheDType::F32);
-        assert_eq!(resolve_compute_dtype(&kv), DType::F32);
+        assert_eq!(
+            resolve_compute_dtype(&kv, None, &Device::Cpu, 0),
+            DType::F32
+        );
     }
 
     #[test]
     fn test_resolve_compute_dtype_single_side() {
         // Only K set
         let kv = KvCacheConfig::default().with_cache_dtype_k(CacheDType::F16);
-        assert_eq!(resolve_compute_dtype(&kv), DType::F16);
+        assert_eq!(
+            resolve_compute_dtype(&kv, None, &Device::Cpu, 0),
+            DType::F16
+        );
 
-        // Only V set
+        // Only V set — BF16 on CPU downgrades to F16 (small model)
         let kv = KvCacheConfig::default().with_cache_dtype_v(CacheDType::BF16);
-        assert_eq!(resolve_compute_dtype(&kv), DType::BF16);
+        assert_eq!(
+            resolve_compute_dtype(&kv, None, &Device::Cpu, 0),
+            DType::F16
+        );
     }
 }

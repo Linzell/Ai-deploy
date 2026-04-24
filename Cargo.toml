@@ -7,6 +7,7 @@ members = [
   "crates/inference-preprocess",
   "crates/inference-postprocess",
   "crates/inference-grpc",
+  "crates/inference-http",
   "crates/inference-tasks",
   "crates/inference-onnx",
   "crates/inference-candle",
@@ -48,6 +49,7 @@ cast_sign_loss = "allow"
 [workspace.dependencies]
 # Async runtime
 tokio = { version = "1.49", features = ["full"] }
+tokio-util = "0.7"
 async-trait = "0.1"
 
 # Serialization & Config
@@ -74,7 +76,7 @@ tonic-prost-build = "0.14"
 hf-hub = { version = "0.5", features = ["tokio"] }
 
 # AWS S3
-aws-sdk-s3 = "1.124"
+aws-sdk-s3 = "1.131"
 aws-config = { version = "1.8", features = ["behavior-version-latest"] }
 
 # ML (Candle)
@@ -82,7 +84,16 @@ candle-core = "0.9"
 candle-nn = "0.9"
 candle-transformers = "0.9"
 
+# OpenTelemetry (env-gated, disabled by default)
+opentelemetry = "0.28"
+opentelemetry_sdk = { version = "0.28", features = ["trace", "metrics"] }
+opentelemetry-otlp = { version = "0.28", features = ["grpc-tonic", "metrics", "trace"] }
+tracing-opentelemetry = "0.29"
+
 # Utilities
 bytes = { version = "1.11", features = ["serde"] }
 futures = "0.3"
 uuid = { version = "1.0", features = ["v4"] }
+dotenvy = "0.15"
+sysinfo = { version = "0.35", default-features = false, features = ["system"] }
+nvml-wrapper = "0.10"

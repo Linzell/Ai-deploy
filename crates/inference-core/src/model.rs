@@ -84,3 +84,30 @@ pub struct ModelMetadata {
     pub input_types: Vec<String>,
     pub output_types: Vec<String>,
 }
+
+/// Available models in the system.
+pub fn get_available_models() -> Vec<ModelMetadata> {
+    vec![
+        ModelMetadata {
+            name: "maiia.chat-completion.v1".to_string(),
+            version: "1.0.0".to_string(),
+            model_type: "chat-completion".to_string(),
+            input_types: vec!["text".to_string()],
+            output_types: vec!["text".to_string()],
+        },
+        ModelMetadata {
+            name: "maiia.completion.v1".to_string(),
+            version: "1.0.0".to_string(),
+            model_type: "completion".to_string(),
+            input_types: vec!["text".to_string()],
+            output_types: vec!["text".to_string()],
+        },
+        ModelMetadata {
+            name: "maiia.feature-extraction.v1".to_string(),
+            version: "1.0.0".to_string(),
+            model_type: "feature-extraction".to_string(),
+            input_types: vec!["text".to_string()],
+            output_types: vec!["embedding".to_string()],
+        },
+    ]
+}

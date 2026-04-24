@@ -68,14 +68,18 @@ impl Tokenizer {
                 max_length: None,
             }),
             Err(e) => {
-                // Check if it's a model type error - try to fix the tokenizer
                 let err_str = e.to_string();
-                if err_str.contains("ModelUntagged") || err_str.contains("model") {
+                // Known fixable issues: missing model type, broken post_processor
+                if err_str.contains("ModelUntagged")
+                    || err_str.contains("model")
+                    || err_str.contains("PostProcessorWrapper")
+                    || err_str.contains("post_processor")
+                {
                     warn!(
                         error = %err_str,
-                        "Standard tokenizer loading failed, trying to patch vocab-only format"
+                        "Standard tokenizer loading failed, attempting JSON patch"
                     );
-                    Self::from_file_with_vocab_patch(path)
+                    Self::from_file_with_patch(path)
                 } else {
                     Err(PreprocessError::Tokenizer(format!(
                         "Failed to load tokenizer: {e}"
@@ -85,37 +89,59 @@ impl Tokenizer {
         }
     }
 
-    /// Load tokenizer by patching vocab-only format to use WordLevel model.
+    /// Load tokenizer by patching known-incompatible JSON fields.
     ///
-    /// TTS models often have tokenizers with just a vocab mapping and no model type.
-    /// This function patches the JSON to add a WordLevel model type.
-    fn from_file_with_vocab_patch(path: &Path) -> PreprocessResult<Self> {
+    /// Fixes two known issues:
+    /// 1. **Missing model type** — TTS models (MMS-TTS, SpeechT5) have a vocab
+    ///    mapping with no `"type"` field. We add `"WordLevel"`.
+    /// 2. **Broken post_processor** — Some models (Kokoro) have a
+    ///    `TemplateProcessing` post-processor missing the required `"pair"` field,
+    ///    causing the `tokenizers` crate to fail deserialization. We strip it.
+    fn from_file_with_patch(path: &Path) -> PreprocessResult<Self> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| PreprocessError::FileLoad(format!("Failed to read tokenizer: {e}")))?;
 
         let mut json: serde_json::Value = serde_json::from_str(&content)
             .map_err(|e| PreprocessError::Tokenizer(format!("Invalid tokenizer JSON: {e}")))?;
 
-        // Check if model exists but has no type
+        let mut patched = false;
+
+        // Fix 1: model with no type → WordLevel
         if let Some(model) = json.get_mut("model") {
             if model.get("type").is_none() {
-                // Add WordLevel type for simple vocab tokenizers
                 if let Some(obj) = model.as_object_mut() {
                     obj.insert("type".to_string(), serde_json::json!("WordLevel"));
-                    // WordLevel requires unk_token
                     if obj.get("unk_token").is_none() {
                         obj.insert("unk_token".to_string(), serde_json::json!("<unk>"));
                     }
-                    info!("Patched tokenizer to use WordLevel model");
+                    info!("Patched tokenizer: added WordLevel model type");
+                    patched = true;
                 }
             }
         }
 
-        let patched = serde_json::to_vec(&json).map_err(|e| {
+        // Fix 2: TemplateProcessing post_processor missing "pair" → remove it
+        // The tokenizers crate requires "pair" for TemplateProcessing deserialization.
+        // TTS models don't use pair encoding, so stripping the post_processor is safe.
+        if let Some(pp) = json.get("post_processor") {
+            if pp.get("type").and_then(|t| t.as_str()) == Some("TemplateProcessing")
+                && pp.get("pair").is_none()
+            {
+                json["post_processor"] = serde_json::Value::Null;
+                info!("Patched tokenizer: removed incomplete TemplateProcessing post_processor");
+                patched = true;
+            }
+        }
+
+        if !patched {
+            warn!("No known patches applied, tokenizer may still fail to load");
+        }
+
+        let bytes = serde_json::to_vec(&json).map_err(|e| {
             PreprocessError::Tokenizer(format!("Failed to serialize patched tokenizer: {e}"))
         })?;
 
-        Self::from_bytes(&patched)
+        Self::from_bytes(&bytes)
     }
 
     /// Load tokenizer from bytes (tokenizer.json content).

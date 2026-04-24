@@ -66,24 +66,30 @@ pub struct Cli {
     #[arg(long)]
     pub port: Option<u16>,
 
+    /// HTTP server port.
+    #[arg(long)]
+    pub http_port: Option<u16>,
+
     /// Number of GPU layers to offload (for llama.cpp).
     #[arg(long)]
     pub n_gpu_layers: Option<u32>,
 
-    /// Number of models to show when browsing (default: 10).
-    #[arg(long, default_value = "10")]
-    pub limit: usize,
+    /// Eagerly load the model at startup instead of waiting for the first request.
+    /// Default: true (model loads immediately). Use --no-eager to defer loading.
+    #[arg(long, default_missing_value = "true", default_value = "true", action = clap::ArgAction::Set)]
+    pub eager: bool,
 }
 
-/// Resolved CLI mode after parsing arguments.
+/// Resolved CLI mode based on which arguments were provided.
+#[derive(Debug)]
 pub enum CliMode {
-    /// No args: show task families and usage help.
+    /// No args: interactive browsing (family -> task -> model).
     Browse,
-    /// --task: query HF API and list models for this task.
+    /// `--task <task>`: interactive model selection for a known task.
     SearchTask(String),
-    /// --model: auto-derive config from HF metadata and start the server.
+    /// `--model <id>`: auto-derive config and start server.
     RunModel(String),
-    /// --config: legacy TOML preset mode.
+    /// `--config <path>`: legacy TOML preset mode.
     RunConfig(String),
 }
 

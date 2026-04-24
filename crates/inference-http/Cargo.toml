@@ -1,0 +1,32 @@
+[package]
+name = "inference-http"
+version.workspace = true
+edition.workspace = true
+description = "HTTP server for inference service (OpenAI-compatible)"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# TLS support for HTTP server
+# Note: axum 0.8 doesn't have a 'tls' feature, use axum-tls crate instead if needed
+
+[dependencies]
+inference-core = { path = "../inference-core" }
+tokio.workspace = true
+tokio-util.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+axum = { version = "0.8", features = ["json", "macros"] }
+tower = { version = "0.5", features = ["limit"] }
+tower-http = { version = "0.6", features = ["trace", "fs", "cors"] }
+bytes.workspace = true
+uuid.workspace = true
+futures.workspace = true
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+axum-test = "14"

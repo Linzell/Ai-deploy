@@ -61,6 +61,36 @@ impl PreprocessedOutput {
     }
 }
 
+/// Validate a user-provided local file path to prevent directory traversal.
+///
+/// The path is resolved against the current working directory and checked
+/// to ensure it does not escape the base directory.
+fn sanitize_local_path(path: &str) -> PreprocessResult<std::path::PathBuf> {
+    // Reject paths with parent-directory references
+    if path.contains("..") {
+        return Err(PreprocessError::InvalidInput(
+            "Path contains forbidden '..' sequence".into(),
+        ));
+    }
+
+    let base = std::env::current_dir().map_err(|e| {
+        PreprocessError::FileLoad(format!("Failed to determine working directory: {e}"))
+    })?;
+
+    let target = base
+        .join(path)
+        .canonicalize()
+        .map_err(|e| PreprocessError::FileLoad(format!("Invalid or inaccessible path: {e}")))?;
+
+    if !target.starts_with(&base) {
+        return Err(PreprocessError::InvalidInput(
+            "Path traversal detected: path escapes allowed directory".into(),
+        ));
+    }
+
+    Ok(target)
+}
+
 /// Main preprocessor that handles all input types.
 pub struct Preprocessor {
     #[cfg(feature = "text")]
@@ -176,16 +206,13 @@ impl Preprocessor {
 
     /// Process a raw JSON payload string.
     pub async fn process_json(&self, payload: &str) -> PreprocessResult<PreprocessedOutput> {
-        tracing::debug!(
-            payload_len = payload.len(),
-            payload_preview = &payload[..payload.len().min(200)],
-            "Preprocessing JSON payload"
-        );
+        // Use trace level for payload content to avoid leaking PII/API keys into logs.
+        tracing::trace!(payload_len = payload.len(), "Preprocessing JSON payload");
 
         let input: RawInput = serde_json::from_str(payload).map_err(|e| {
             tracing::error!(
                 error = %e,
-                payload_start = &payload[..payload.len().min(100)],
+                payload_len = payload.len(),
                 "Failed to parse payload as RawInput"
             );
             PreprocessError::InvalidInput(format!("Invalid JSON input: {e}"))
@@ -581,9 +608,12 @@ impl Preprocessor {
                 base64::Engine::decode(&base64::engine::general_purpose::STANDARD, data)
                     .map_err(|e| PreprocessError::Image(format!("Invalid base64: {e}")))
             }
-            ImageSource::Local => tokio::fs::read(path)
-                .await
-                .map_err(|e| PreprocessError::FileLoad(format!("Failed to read file: {e}"))),
+            ImageSource::Local => {
+                let safe_path = sanitize_local_path(path)?;
+                tokio::fs::read(&safe_path)
+                    .await
+                    .map_err(|e| PreprocessError::FileLoad(format!("Failed to read file: {e}")))
+            }
             ImageSource::Url => {
                 // For now, treat URLs as local paths or error
                 // TODO: Add HTTP client for URL fetching
@@ -596,7 +626,8 @@ impl Preprocessor {
                 let detected = Self::detect_image_source(path);
                 if matches!(detected, ImageSource::Auto) {
                     // Default to local
-                    tokio::fs::read(path)
+                    let safe_path = sanitize_local_path(path)?;
+                    tokio::fs::read(&safe_path)
                         .await
                         .map_err(|e| PreprocessError::FileLoad(format!("Failed to read file: {e}")))
                 } else {
@@ -657,7 +688,8 @@ impl Preprocessor {
                 .map_err(|e| PreprocessError::FileLoad(format!("Failed to read cached file: {e}")))
         } else {
             // Local file
-            tokio::fs::read(path)
+            let safe_path = sanitize_local_path(path)?;
+            tokio::fs::read(&safe_path)
                 .await
                 .map_err(|e| PreprocessError::FileLoad(format!("Failed to read file: {e}")))
         }

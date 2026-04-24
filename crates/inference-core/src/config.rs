@@ -119,6 +119,48 @@ impl TaskType {
         s == "text_to_speech"
     }
 
+    /// Check if this is an encoder-only task (single forward pass, no autoregressive loop).
+    ///
+    /// Currently limited to text-based encoder models (BERT, RoBERTa, DistilBERT):
+    /// - token-classification (NER, POS tagging)
+    /// - text-classification / sentiment-analysis
+    /// - fill-mask (masked language modeling)
+    /// - feature-extraction / sentence-similarity (embeddings)
+    /// - question-answering (extractive QA)
+    /// - zero-shot-classification
+    pub fn is_encoder_only(&self) -> bool {
+        let s = self.0.to_lowercase().replace('-', "_");
+        matches!(
+            s.as_str(),
+            "token_classification"
+                | "text_classification"
+                | "sentiment_analysis"
+                | "fill_mask"
+                | "feature_extraction"
+                | "sentence_similarity"
+                | "question_answering"
+                | "zero_shot_classification"
+        )
+    }
+
+    /// Check if this is an audio classification task.
+    pub fn is_audio_classification(&self) -> bool {
+        let s = self.0.to_lowercase().replace('-', "_");
+        s == "audio_classification"
+    }
+
+    /// Check if this is an object detection task.
+    pub fn is_object_detection(&self) -> bool {
+        let s = self.0.to_lowercase().replace('-', "_");
+        s == "object_detection"
+    }
+
+    /// Check if this is an image-to-text (image captioning) task.
+    pub fn is_image_to_text(&self) -> bool {
+        let s = self.0.to_lowercase().replace('-', "_");
+        s == "image_to_text"
+    }
+
     /// Get the raw string value.
     pub fn as_str(&self) -> &str {
         &self.0
@@ -183,6 +225,12 @@ impl DeviceType {
     #[must_use]
     pub const fn is_auto(&self) -> bool {
         matches!(self, Self::Auto)
+    }
+
+    /// Returns `true` if this device type is a GPU variant (Metal, Cuda, or generic Gpu).
+    #[must_use]
+    pub const fn is_gpu(&self) -> bool {
+        matches!(self, Self::Metal | Self::Cuda | Self::Gpu)
     }
 }
 
@@ -330,6 +378,12 @@ pub struct InferenceConfig {
     #[serde(default)]
     pub n_gpu_layers: u32,
 
+    /// Idle timeout in seconds before model is unloaded automatically.
+    /// Set to 0 to disable automatic unloading (model stays loaded indefinitely).
+    /// Default: 0 (disabled).
+    #[serde(default)]
+    pub idle_timeout_seconds: u64,
+
     /// KV cache configuration for attention cache management.
     ///
     /// Controls cache dtype quantization, max length, flash attention,
@@ -379,6 +433,7 @@ impl Default for InferenceConfig {
             n_gpu_layers: 0,
             kv_cache: KvCacheConfig::default(),
             extra: HashMap::new(),
+            idle_timeout_seconds: 300,
         }
     }
 }
@@ -413,6 +468,10 @@ pub struct ServiceConfig {
     /// gRPC server port
     #[serde(default = "default_grpc_port")]
     pub grpc_port: u16,
+
+    /// HTTP server port
+    #[serde(default = "default_http_port")]
+    pub http_port: u16,
 
     /// Health check port
     #[serde(default = "default_health_port")]
@@ -450,10 +509,6 @@ pub struct ServiceConfig {
     #[serde(default = "default_max_payload_size_bytes")]
     pub max_payload_size_bytes: usize,
 
-    /// Seconds to drain in-flight requests during shutdown. Default: 30.
-    #[serde(default = "default_shutdown_drain_seconds")]
-    pub shutdown_drain_seconds: u64,
-
     /// Maximum concurrent in-flight requests (0 = unlimited). Default: 64.
     #[serde(default = "default_max_concurrent_requests")]
     pub max_concurrent_requests: usize,
@@ -471,6 +526,9 @@ pub struct ServiceConfig {
 
 fn default_grpc_port() -> u16 {
     50051
+}
+fn default_http_port() -> u16 {
+    8000
 }
 fn default_health_port() -> u16 {
     8080
@@ -496,9 +554,6 @@ fn default_request_timeout_ms() -> u64 {
 fn default_max_payload_size_bytes() -> usize {
     10 * 1024 * 1024 // 10 MiB
 }
-fn default_shutdown_drain_seconds() -> u64 {
-    30
-}
 fn default_max_concurrent_requests() -> usize {
     64
 }
@@ -507,6 +562,7 @@ impl Default for ServiceConfig {
     fn default() -> Self {
         Self {
             grpc_port: default_grpc_port(),
+            http_port: default_http_port(),
             health_port: default_health_port(),
             name: default_service_name(),
             enable_batching: default_true(),
@@ -516,7 +572,6 @@ impl Default for ServiceConfig {
             enable_cache: default_true(),
             request_timeout_ms: default_request_timeout_ms(),
             max_payload_size_bytes: default_max_payload_size_bytes(),
-            shutdown_drain_seconds: default_shutdown_drain_seconds(),
             max_concurrent_requests: default_max_concurrent_requests(),
             tls_cert_path: None,
             tls_key_path: None,
@@ -610,6 +665,9 @@ pub struct Config {
     // KV Cache Configuration
     pub kv_cache: KvCacheConfig,
 
+    // Idle timeout configuration
+    pub idle_timeout_seconds: u64,
+
     // HuggingFace Configuration
     pub hf_token: Option<String>,
     pub hf_cache_dir: Option<String>,
@@ -623,6 +681,8 @@ pub struct Config {
 
     // Service Configuration
     pub grpc_port: u16,
+    #[serde(default = "default_http_port")]
+    pub http_port: u16,
     pub health_port: u16,
     pub service_name: String,
     pub enable_batching: bool,
@@ -636,8 +696,6 @@ pub struct Config {
     pub request_timeout_ms: u64,
     /// Maximum payload size in bytes. Default: 10 MiB.
     pub max_payload_size_bytes: usize,
-    /// Seconds to drain in-flight requests during shutdown. Default: 30.
-    pub shutdown_drain_seconds: u64,
     /// Maximum concurrent in-flight requests (0 = unlimited). Default: 64.
     pub max_concurrent_requests: usize,
 
@@ -666,6 +724,7 @@ impl Default for Config {
             num_threads: 4,
             max_cache_length: 2048,
             n_gpu_layers: 0,
+            idle_timeout_seconds: 0,
             kv_cache: KvCacheConfig::default(),
             hf_token: None,
             hf_cache_dir: None,
@@ -675,6 +734,7 @@ impl Default for Config {
             s3_region: None,
             s3_endpoint: None,
             grpc_port: 50051,
+            http_port: 8000,
             health_port: 8080,
             service_name: "maiia-ai-worker".to_string(),
             enable_batching: true,
@@ -684,7 +744,6 @@ impl Default for Config {
             enable_cache: true,
             request_timeout_ms: 300_000,              // 5 minutes
             max_payload_size_bytes: 10 * 1024 * 1024, // 10 MiB
-            shutdown_drain_seconds: 30,
             max_concurrent_requests: 64,
             tls_cert_path: None,
             tls_key_path: None,
@@ -836,6 +895,7 @@ impl Config {
 
         // Service
         self.grpc_port = toml.service.grpc_port;
+        self.http_port = toml.service.http_port;
         self.health_port = toml.service.health_port;
         self.service_name.clone_from(&toml.service.name);
         self.enable_batching = toml.service.enable_batching;
@@ -845,7 +905,6 @@ impl Config {
         self.enable_cache = toml.service.enable_cache;
         self.request_timeout_ms = toml.service.request_timeout_ms;
         self.max_payload_size_bytes = toml.service.max_payload_size_bytes;
-        self.shutdown_drain_seconds = toml.service.shutdown_drain_seconds;
         self.max_concurrent_requests = toml.service.max_concurrent_requests;
         self.tls_cert_path.clone_from(&toml.service.tls_cert_path);
         self.tls_key_path.clone_from(&toml.service.tls_key_path);
@@ -955,6 +1014,9 @@ impl Config {
         if let Some(v) = get_env("GRPC_PORT").and_then(|s| s.parse().ok()) {
             self.grpc_port = v;
         }
+        if let Some(v) = get_env("HTTP_PORT").and_then(|s| s.parse().ok()) {
+            self.http_port = v;
+        }
         if let Some(v) = get_env("HEALTH_PORT").and_then(|s| s.parse().ok()) {
             self.health_port = v;
         }
@@ -981,9 +1043,6 @@ impl Config {
         }
         if let Some(v) = get_env("MAX_PAYLOAD_SIZE_BYTES").and_then(|s| s.parse().ok()) {
             self.max_payload_size_bytes = v;
-        }
-        if let Some(v) = get_env("SHUTDOWN_DRAIN_SECONDS").and_then(|s| s.parse().ok()) {
-            self.shutdown_drain_seconds = v;
         }
         if let Some(v) = get_env("MAX_CONCURRENT_REQUESTS").and_then(|s| s.parse().ok()) {
             self.max_concurrent_requests = v;
@@ -1109,13 +1168,23 @@ impl Config {
         Ok(())
     }
 
-    /// Generate task name from task type if not explicitly set.
+    /// Generate task name: explicit > model-derived > task-type fallback.
     pub fn effective_task_name(&self) -> String {
+        // If task_name was explicitly set (not the default sentinel), use it.
         if self.task_name != "maiia.echo.v1" || self.task_type.is_echo() {
-            self.task_name.clone()
-        } else {
-            format!("maiia.{}.v1", self.task_type)
+            return self.task_name.clone();
         }
+
+        // Derive from model_path: "onnx-community/nsfw_image_detection-ONNX" → "onnx-community.nsfw_image_detection-ONNX.v1"
+        if let Some(ref model_path) = self.model_path {
+            if !model_path.is_empty() {
+                let model_slug = model_path.replace('/', ".");
+                return format!("{model_slug}.v1");
+            }
+        }
+
+        // Fallback to task type
+        format!("maiia.{}.v1", self.task_type)
     }
 
     /// Returns true if TLS is configured (both cert and key paths are set).
@@ -1125,23 +1194,50 @@ impl Config {
 
     /// Resolve `DeviceType::Auto` to a concrete device by probing for GPU.
     ///
-    /// Also sets `n_gpu_layers` to 99 for Llama backend when a GPU is detected,
-    /// unless `n_gpu_layers` was explicitly set to a non-zero value.
+    /// Also sets performance defaults for Llama backend when a GPU is detected:
+    /// - `n_gpu_layers = 99` (offload all layers)
+    /// - `flash_attention = true` (faster attention on Metal/CUDA)
+    /// - `cache_dtype_k/v = Q8_0` (reduces memory bandwidth, ~lossless)
     fn resolve_auto_device(&mut self) {
-        if !self.device.is_auto() {
-            return;
+        // If device is still Auto, probe for GPU
+        if self.device.is_auto() {
+            self.device = auto_detect_device();
         }
 
-        self.device = auto_detect_device();
+        // Resolve generic "Gpu" to the platform-specific variant (Metal/CUDA).
+        // This ensures downstream code sees a concrete device type.
+        if self.device == DeviceType::Gpu {
+            self.device = self.device.resolve();
+        }
 
-        // For llama backend: if GPU was detected and n_gpu_layers is still 0
-        // (default = no GPU layers), offload all layers to GPU automatically.
-        if self.device != DeviceType::Cpu
+        // For llama backend: if a GPU device is selected (or auto-detected) and
+        // n_gpu_layers is still 0 (default = no GPU layers), offload all layers
+        // to GPU automatically. This applies regardless of whether the user set
+        // --device gpu explicitly or it was auto-detected.
+        if self.device.is_gpu()
             && self.n_gpu_layers == 0
             && matches!(self.backend, BackendType::Llama)
         {
             info!("Auto-setting n_gpu_layers=99 for llama backend with GPU");
             self.n_gpu_layers = 99;
+        }
+
+        // For llama backend with GPU: auto-enable flash attention and Q8_0
+        // KV cache if the user hasn't explicitly configured them.
+        // Flash attention is a major throughput win on Metal/CUDA.
+        // Q8_0 KV cache reduces memory bandwidth with negligible quality loss.
+        if self.device.is_gpu() && matches!(self.backend, BackendType::Llama) {
+            if !self.kv_cache.flash_attention {
+                info!("Auto-enabling flash attention for llama backend with GPU");
+                self.kv_cache.flash_attention = true;
+            }
+            if self.kv_cache.cache_dtype_k.is_none() {
+                info!("Auto-setting KV cache dtype to Q8_0 for llama backend with GPU");
+                self.kv_cache.cache_dtype_k = Some(crate::generation::CacheDType::Q8_0);
+            }
+            if self.kv_cache.cache_dtype_v.is_none() {
+                self.kv_cache.cache_dtype_v = Some(crate::generation::CacheDType::Q8_0);
+            }
         }
     }
 
@@ -1165,6 +1261,7 @@ impl Config {
         top_p: Option<f32>,
         num_threads: Option<usize>,
         port: Option<u16>,
+        http_port: Option<u16>,
         n_gpu_layers: Option<u32>,
     ) -> Self {
         let mut config = Self::default();
@@ -1197,10 +1294,11 @@ impl Config {
         // Auto-derive batching from task type
         config.enable_batching = !config.task_type.is_seq2seq();
 
-        // Auto-derive service name
-        let task_slug = task_type.replace(' ', "-");
-        config.service_name = format!("maiia-{task_slug}-worker");
-        config.task_name = format!("maiia.{task_slug}.v1");
+        // Auto-derive service_name and task_name from model_id.
+        // "onnx-community/nsfw_image_detection-ONNX" → "onnx-community.nsfw_image_detection-ONNX.v1"
+        let model_slug = model_id.replace('/', ".");
+        config.service_name = format!("{model_slug}-worker");
+        config.task_name = format!("{model_slug}.v1");
 
         // Apply optional overrides
         if let Some(d) = device {
@@ -1220,6 +1318,9 @@ impl Config {
         }
         if let Some(v) = port {
             config.grpc_port = v;
+        }
+        if let Some(v) = http_port {
+            config.http_port = v;
         }
         if let Some(v) = n_gpu_layers {
             config.n_gpu_layers = v;
@@ -1408,7 +1509,6 @@ onnx_file = "model.onnx"
         let config = Config::default();
         assert_eq!(config.request_timeout_ms, 300_000);
         assert_eq!(config.max_payload_size_bytes, 10 * 1024 * 1024);
-        assert_eq!(config.shutdown_drain_seconds, 30);
         assert_eq!(config.max_concurrent_requests, 64);
     }
 
@@ -1421,14 +1521,12 @@ type = "echo"
 [service]
 request_timeout_ms = 60000
 max_payload_size_bytes = 5242880
-shutdown_drain_seconds = 10
 max_concurrent_requests = 128
 "#;
 
         let toml_config: TomlConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(toml_config.service.request_timeout_ms, 60000);
         assert_eq!(toml_config.service.max_payload_size_bytes, 5_242_880);
-        assert_eq!(toml_config.service.shutdown_drain_seconds, 10);
         assert_eq!(toml_config.service.max_concurrent_requests, 128);
     }
 

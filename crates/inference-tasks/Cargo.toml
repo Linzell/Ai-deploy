@@ -31,7 +31,6 @@ llama-cuda = ["llama", "inference-llama/cuda"]
 [dependencies]
 # Core crates
 inference-core.path = "../inference-core"
-inference-grpc.path = "../inference-grpc"
 inference-loader-hf.path = "../inference-loader-hf"
 inference-loader-s3.path = "../inference-loader-s3"
 inference-preprocess = { path = "../inference-preprocess", optional = true }
@@ -45,6 +44,7 @@ inference-llama = { path = "../inference-llama", optional = true }
 # Runtime
 tokio.workspace = true
 async-trait.workspace = true
+futures-util = "0.3"
 
 # Serialization
 serde.workspace = true

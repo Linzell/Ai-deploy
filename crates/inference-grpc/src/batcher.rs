@@ -157,6 +157,12 @@ impl BatchScheduler {
             let batch_size = batch.len();
             debug!(batch_size, "Dispatching batch");
 
+            // OTel metrics (no-op when OTEL_ENDPOINT is not set)
+            #[allow(clippy::cast_possible_truncation)]
+            crate::metrics::metrics()
+                .batch_size
+                .record(batch_size as u64, &[]);
+
             // Build the payload slice for execute_batch.
             let payloads: Vec<(&str, &str)> = batch
                 .iter()
