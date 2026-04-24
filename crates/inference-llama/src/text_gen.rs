@@ -175,8 +175,6 @@ impl LlamaWorker {
         // of stderr. This lets our EnvFilter control the level:
         // - At WARN (default): only llama.cpp errors/warnings appear (no spam)
         // - At DEBUG/INFO: full model loading details visible for debugging
-        // This is critical — "null result from llama cpp" gives no context, but
-        // the native logs explain WHY (OOM, incompatible arch, missing tensors, etc.)
         llama_cpp_2::send_logs_to_tracing(
             llama_cpp_2::LogOptions::default().with_logs_enabled(true),
         );
@@ -192,17 +190,9 @@ impl LlamaWorker {
                 // The llama-cpp-2 error is often "null result from llama cpp" which is
                 // unhelpful. The real error was already logged by llama.cpp's native
                 // logger (routed through tracing above), e.g.:
-                //   "key qwen35.rope.dimension_sections has wrong array length; expected 4, got 3"
+                //   "missing tensor 'blk.0.ssm_dt.bias'"
                 //   "model is too large for available memory"
-                // We hint the user to check the logs above and suggest alternatives.
-                let msg = format!(
-                    "Failed to load GGUF model: {e}. \
-                     The detailed error from llama.cpp should appear in the logs above. \
-                     Common causes: \
-                     (1) model format not supported by this llama.cpp version — try the Candle backend instead (--backend candle); \
-                     (2) insufficient GPU/CPU memory — try --n-gpu-layers 0 or a smaller model; \
-                     (3) corrupted GGUF file — re-download or try a different quantization."
-                );
+                let msg = format!("Failed to load GGUF model: {e}");
                 tracing::error!("{msg}");
                 let _ = self.ready_tx.send(WorkerReady::Failed(msg));
                 return;

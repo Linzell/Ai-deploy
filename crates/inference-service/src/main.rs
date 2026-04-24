@@ -59,21 +59,15 @@ async fn main() -> anyhow::Result<()> {
     match cli.mode() {
         CliMode::Browse => {
             // Interactive: essentials -> family -> task -> model -> start
-            let selection = interactive::select_model().await?;
-            let Some(selection) = selection else {
-                return Ok(()); // User pressed Escape
-            };
+            // If model fails to load, go back to model selection
             init_logging();
-            run_with_model(&selection.model_id, &selection.essentials, &cli).await
+            interactive_model_loop(&cli).await
         }
         CliMode::SearchTask(task) => {
             // Interactive: essentials -> model selection for a known task -> start
-            let selection = interactive::select_model_for_task_str(&task).await?;
-            let Some(selection) = selection else {
-                return Ok(()); // User pressed Escape
-            };
+            // If model fails to load, go back to model selection
             init_logging();
-            run_with_model(&selection.model_id, &selection.essentials, &cli).await
+            interactive_task_loop(&task, &cli).await
         }
         CliMode::RunModel(model_id) => {
             init_logging();
@@ -483,48 +477,91 @@ async fn run_with_config(config_path: &str, cli: &Cli) -> anyhow::Result<()> {
     start_server(config, ServerMode::Both, cli.eager).await
 }
 
-/// When a GGUF model fails to load via llama.cpp, try to find the original
-/// safetensors model on HuggingFace and build a new Config for the Candle backend.
-async fn try_fallback_to_safetensors(config: &Config) -> anyhow::Result<Config> {
-    let model_id = config.model_path.as_deref().ok_or_else(|| {
-        anyhow::anyhow!("No model path in config")
-    })?;
+/// Interactive model selection with retry on load failure.
+///
+/// If the selected model fails to load (broken GGUF, missing tensors, OOM, etc.),
+/// the user is returned to model selection to pick a different model instead of
+/// the process exiting with an error.
+async fn interactive_model_loop(cli: &Cli) -> anyhow::Result<()> {
+    loop {
+        let selection = interactive::select_model().await?;
+        let Some(selection) = selection else {
+            return Ok(()); // User pressed Escape
+        };
 
-    let variant = hf_api::find_safetensors_variant(model_id).await?;
-    let variant = variant.ok_or_else(|| {
-        anyhow::anyhow!(
-            "No safetensors variant found for '{model_id}'. \
-             The GGUF format may be incompatible with this llama.cpp version. \
-             Try a different model or quantization."
-        )
-    })?;
+        match run_with_model(&selection.model_id, &selection.essentials, cli).await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                let err_str = format!("{e}");
+                // If the error is a model load failure, offer to retry with a different model.
+                // For other errors (config, network, etc.), exit normally.
+                if is_model_load_error(&err_str) {
+                    eprintln!();
+                    eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                    eprintln!("  ⚠  Model failed to load");
+                    eprintln!("  Reason: {}", shorten_error(&err_str));
+                    eprintln!("  This usually means the GGUF file is incompatible or corrupted.");
+                    eprintln!("  Returning to model selection...");
+                    eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                    eprintln!();
+                    continue; // Back to model selection
+                }
+                return Err(e);
+            }
+        }
+    }
+}
 
-    // Build a new config pointing to the safetensors model with Candle backend
-    let device_str = match &config.device {
-        inference_core::DeviceType::Auto => "auto",
-        inference_core::DeviceType::Cpu => "cpu",
-        inference_core::DeviceType::Gpu => "gpu",
-        inference_core::DeviceType::Cuda => "cuda",
-        inference_core::DeviceType::Metal => "metal",
-    };
+/// Interactive model selection for a specific task, with retry on load failure.
+async fn interactive_task_loop(task: &str, cli: &Cli) -> anyhow::Result<()> {
+    loop {
+        let selection = interactive::select_model_for_task_str(task).await?;
+        let Some(selection) = selection else {
+            return Ok(()); // User pressed Escape
+        };
 
-    let new_config = Config::from_model_args(
-        &variant.id,
-        &config.task_type.to_string(),
-        "candle", // Switch to Candle backend
-        None,     // No ONNX file
-        None,     // No GGUF file
-        Some(device_str),
-        Some(config.max_tokens),
-        Some(config.temperature),
-        Some(config.top_p),
-        Some(config.num_threads),
-        Some(config.grpc_port),
-        Some(config.http_port),
-        Some(config.n_gpu_layers),
-    );
+        match run_with_model(&selection.model_id, &selection.essentials, cli).await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                let err_str = format!("{e}");
+                if is_model_load_error(&err_str) {
+                    eprintln!();
+                    eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                    eprintln!("  ⚠  Model failed to load");
+                    eprintln!("  Reason: {}", shorten_error(&err_str));
+                    eprintln!("  This usually means the GGUF file is incompatible or corrupted.");
+                    eprintln!("  Returning to model selection...");
+                    eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                    eprintln!();
+                    continue;
+                }
+                return Err(e);
+            }
+        }
+    }
+}
 
-    Ok(new_config)
+/// Check if an error is a model load failure (vs config/network error).
+fn is_model_load_error(err: &str) -> bool {
+    err.contains("Failed to load")
+        || err.contains("failed to load model")
+        || err.contains("missing tensor")
+        || err.contains("null result from llama cpp")
+        || err.contains("OOM")
+        || err.contains("out of memory")
+        || err.contains("insufficient")
+        || err.contains("incompatible")
+}
+
+/// Shorten a long error message for display.
+fn shorten_error(err: &str) -> String {
+    // Take the first line, or truncate at 200 chars
+    let first_line = err.lines().next().unwrap_or(err);
+    if first_line.len() > 200 {
+        format!("{}...", &first_line[..197])
+    } else {
+        first_line.to_string()
+    }
 }
 
 /// Validate config, create task, and start server.
@@ -584,55 +621,8 @@ async fn start_server(config: Config, server_mode: ServerMode, eager: bool) -> a
         match TaskRegistry::create(&config).await {
             Ok(t) => t,
             Err(e) => {
-                // If this is a GGUF/llama model that failed to load, try to fall back
-                // to the same model's safetensors weights via Candle.
-                // This is NOT a different model — it's the same weights in a different
-                // format. GGUF is a quantized repackaging of the original safetensors.
-                let err_msg = format!("{e}");
-                if config.backend == inference_core::BackendType::Llama
-                    && config.gguf_file.is_some()
-                {
-                    warn!(
-                        error = %err_msg,
-                        "GGUF model failed to load via llama.cpp — \
-                         attempting to load the same model via Candle (safetensors format)"
-                    );
-                    match try_fallback_to_safetensors(&config).await {
-                        Ok(fallback_config) => {
-                            info!(
-                                original_model = ?config.model_path,
-                                fallback_model = ?fallback_config.model_path,
-                                "Found same model with safetensors weights — \
-                                 retrying with Candle backend (same weights, different format)"
-                            );
-                            match TaskRegistry::create(&fallback_config).await {
-                                Ok(t) => t,
-                                Err(fe) => {
-                                    error!("Safetensors fallback also failed: {}", fe);
-                                    return Err(anyhow::anyhow!(
-                                        "GGUF load failed: {err_msg}\n\
-                                         Safetensors fallback also failed: {fe}\n\n\
-                                         The GGUF format may be incompatible with this llama.cpp version. \
-                                         This is a known issue with Qwen3.5/Qwen3.6 models — \
-                                         their rope.dimension_sections format is not yet supported."
-                                    ));
-                                }
-                            }
-                        }
-                        Err(fe) => {
-                            error!("No safetensors variant found: {fe}");
-                            return Err(anyhow::anyhow!(
-                                "GGUF load failed: {err_msg}\n\n\
-                                 No safetensors version of this model was found on HuggingFace. \
-                                 The GGUF format may be incompatible with this llama.cpp version. \
-                                 This is a known issue with Qwen3.5/Qwen3.6 models."
-                            ));
-                        }
-                    }
-                } else {
-                    error!("Failed to create and load task: {}", e);
-                    return Err(anyhow::anyhow!("{e}"));
-                }
+                error!("Failed to create and load task: {}", e);
+                return Err(anyhow::anyhow!("{e}"));
             }
         }
     } else {
