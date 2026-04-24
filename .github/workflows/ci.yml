@@ -8,11 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # Faster builds: share target dir across jobs via cache
   CARGO_INCREMENTAL: 0
-  # Note: Do NOT set RUSTFLAGS="-D warnings" globally — it overrides the
-  # workspace [lints] table and turns pedantic clippy warnings into errors.
-  # Each job handles warning strictness individually.
 
 jobs:
   # ===========================================================================
@@ -29,7 +25,7 @@ jobs:
       - run: cargo fmt --all -- --check
 
   # ===========================================================================
-  # Job 2: Clippy lints
+  # Job 2: Clippy lints (default features = candle, llama, http, grpc)
   # ===========================================================================
   clippy:
     name: Clippy
@@ -43,10 +39,13 @@ jobs:
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: Swatinem/rust-cache@v2
+      # Run clippy with default features (candle, llama, http, grpc)
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # Run clippy with CUDA features enabled (catches cuda-gated code)
+      - run: cargo clippy --workspace --all-targets --features "http,grpc,candle,llama,cuda" -- -D warnings
 
   # ===========================================================================
-  # Job 3: Build check (cargo check)
+  # Job 3: Build check (cargo check with all feature combos)
   # ===========================================================================
   check:
     name: Check
@@ -58,10 +57,13 @@ jobs:
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: Swatinem/rust-cache@v2
+      # Default features
       - run: cargo check --workspace --all-targets
+      # CUDA features
+      - run: cargo check --workspace --all-targets --features "http,grpc,candle,llama,cuda"
 
   # ===========================================================================
-  # Job 4: Tests (includes config validation of all 35+ TOML configs)
+  # Job 4: Tests
   # ===========================================================================
   test:
     name: Test
@@ -88,6 +90,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
       - name: Run cargo audit
         run: cargo audit
 
@@ -100,7 +104,7 @@ jobs:
     needs: [security, test]
     steps:
       - uses: actions/checkout@v4
-      - name: Build Docker image (default ONNX backend)
+      - name: Build Docker image (default features)
         run: docker build -t inference-service:ci-test .
       - name: Verify binary runs --help
         run: |
