@@ -183,9 +183,8 @@ impl CodePredictor {
 
         // Phase 2: Autoregressively generate remaining 14 codes
         let mut prev_code = first_code;
-        let mut offset = seq_len; // KV cache already has 2 entries from prefill
 
-        for group_idx in 1..self.num_codebooks {
+        for (offset, group_idx) in (seq_len..).zip(1..self.num_codebooks) {
             // Embed previous code using codec_embeddings[group_idx - 1]
             let code_tensor = Tensor::new(&[prev_code], device)?;
             let code_emb = self.codec_embeddings[group_idx - 1].forward(&code_tensor)?;
@@ -217,7 +216,6 @@ impl CodePredictor {
 
             predicted_tokens.push(next_code);
             prev_code = next_code;
-            offset += 1;
         }
 
         Ok(predicted_tokens)
